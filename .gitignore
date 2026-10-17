@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build & Release Artifacts
+dist/
+dist-ssr/
+src-tauri/target/
+src-tauri/WixTools/
+*.local
+
+# Binaries & Heavy Proprietary/Temporary Files
+*.exe
+*.msi
+*.dll
+*.pdb
+*.lib
+*.exp
+*.so
+*.dylib
+*.snapshot
+*.plg
+*.nmx
+*.onnx
+*.tar.gz
+*.webm
+*.mp4
+*.mkv
+*.flv
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
