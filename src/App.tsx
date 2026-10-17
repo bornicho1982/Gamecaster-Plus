@@ -952,10 +952,13 @@ export const App: React.FC = () => {
     }
   }, [isStreaming, streamChannels, showToast]);
 
-  // Take Screenshot
+  // Take Screenshot (Composed PGM Canvas PNG + Native Fallback)
   const handleTakeScreenshot = useCallback(async () => {
     try {
-      const path = await invoke<string>("take_screenshot");
+      const canvasDataUrl = pgmCanvasRef.current
+        ? pgmCanvasRef.current.toDataURL("image/png")
+        : null;
+      const path = await invoke<string>("take_screenshot", { canvasDataUrl });
       showToast(`📸 Captura PNG guardada en: ${path}`);
     } catch (e) {
       showToast(`Error en captura: ${String(e)}`);
@@ -1539,6 +1542,18 @@ export const App: React.FC = () => {
         selectedSourceId={selectedSourceId}
         onSelectSource={setSelectedSourceId}
         onUpdateSource={handleUpdateSource}
+        onDeleteSource={(sourceId) =>
+          setScenes((prev) =>
+            prev.map((sc) =>
+              sc.id === editableScene.id
+                ? {
+                    ...sc,
+                    sources: sc.sources.filter((i) => i.id !== sourceId),
+                  }
+                : sc
+            )
+          )
+        }
         onOpenSourceProperties={(source, sceneId) =>
           setInspectorTarget({ source, sceneId })
         }
@@ -1547,6 +1562,8 @@ export const App: React.FC = () => {
         transitionDurationMs={transitionDurationMs}
         transitionTriggerCount={transitionTriggerCount}
         pgmCanvasRef={pgmCanvasRef}
+        openWindows={openWindows}
+        onRefreshWindows={refreshOpenWindows}
       />
 
       {/* BOTTOM 3-COLUMN MODULAR STUDIO DOCK */}

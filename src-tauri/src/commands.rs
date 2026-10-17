@@ -10,8 +10,9 @@ use crate::engine::{
     },
     wgc_capture::{
         capture_desktop_jpeg_base64, capture_window_jpeg_base64, enumerate_monitors,
-        enumerate_visible_windows, get_foreground_window_info, save_fullscreen_screenshot,
-        set_process_windows_exclude_from_capture, MonitorInfo, WindowInfo,
+        enumerate_visible_windows, get_foreground_window_info, save_canvas_screenshot_base64,
+        save_fullscreen_screenshot, set_process_windows_exclude_from_capture, MonitorInfo,
+        WindowInfo,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -107,9 +108,14 @@ pub async fn list_audio_capture_devices() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-pub async fn take_screenshot() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+pub async fn take_screenshot(canvas_data_url: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
         let dir = get_screenshots_dir();
+        if let Some(ref data_url) = canvas_data_url {
+            if !data_url.trim().is_empty() {
+                return save_canvas_screenshot_base64(&dir, data_url);
+            }
+        }
         save_fullscreen_screenshot(&dir)
     })
     .await

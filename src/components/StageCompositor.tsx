@@ -6,6 +6,8 @@ import {
   TransitionId,
   WhiteboardTool,
   WhiteboardStroke,
+  MonitorInfo,
+  WindowInfo,
 } from "../types/broadcaster";
 import {
   MousePointer,
@@ -21,6 +23,17 @@ import {
   ArrowRightLeft,
   Settings,
   Lock,
+  Unlock,
+  Maximize2,
+  Crosshair,
+  Scissors,
+  RefreshCw,
+  ZoomIn,
+  ZoomOut,
+  FlipHorizontal,
+  ArrowUp,
+  ArrowDown,
+  RotateCcw,
 } from "lucide-react";
 
 interface StageCompositorProps {
@@ -33,12 +46,15 @@ interface StageCompositorProps {
   selectedSourceId: string | null;
   onSelectSource: (id: string | null) => void;
   onUpdateSource: (sceneId: string, updated: StageSource) => void;
+  onDeleteSource?: (sourceId: string) => void;
   onOpenSourceProperties: (source: StageSource, sceneId: string) => void;
   onPushLive: () => void;
   activeTransition: TransitionId;
   transitionDurationMs: number;
   transitionTriggerCount: number;
   pgmCanvasRef: React.RefObject<HTMLCanvasElement>;
+  openWindows?: WindowInfo[];
+  onRefreshWindows?: () => void;
 }
 
 type HandlePosition = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
@@ -63,12 +79,15 @@ export const StageCompositor: React.FC<StageCompositorProps> = React.memo(({
   selectedSourceId,
   onSelectSource,
   onUpdateSource,
+  onDeleteSource,
   onOpenSourceProperties,
   onPushLive,
   activeTransition,
   transitionDurationMs,
   transitionTriggerCount,
   pgmCanvasRef,
+  openWindows = [],
+  onRefreshWindows,
 }) => {
   const stageContainerRef = useRef<HTMLDivElement | null>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -81,6 +100,28 @@ export const StageCompositor: React.FC<StageCompositorProps> = React.memo(({
     w: 880,
     h: 495,
   });
+  const [stageZoom, setStageZoom] = useState<number>(1.0);
+  const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    source: StageSource;
+    sceneId: string;
+  } | null>(null);
+
+  const refreshMonitorsList = useCallback(() => {
+    invoke<MonitorInfo[]>("list_monitors")
+      .then((list) => {
+        if (Array.isArray(list) && list.length > 0) {
+          setMonitors(list);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshMonitorsList();
+  }, [refreshMonitorsList]);
 
   // Double-buffered media element caches (updated directly via refs with ZERO React re-renders)
   const desktopImgRef = useRef<HTMLImageElement | null>(null);
@@ -134,7 +175,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = React.memo(({
       const padY = studioMode ? 48 : 20;
       const availW = Math.max(240, (rect.width - padX) / (studioMode ? 2 : 1));
       const availH = Math.max(160, rect.height - padY);
-      const scale = Math.min(availW / stageW, availH / stageH);
+      const scale = Math.min(availW / stageW, availH / stageH) * stageZoom;
       setFittedSize({
         w: Math.max(160, Math.floor(stageW * scale)),
         h: Math.max(90, Math.floor(stageH * scale)),
@@ -145,7 +186,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = React.memo(({
     const ro = new ResizeObserver(updateSize);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [stageW, stageH, studioMode]);
+  }, [stageW, stageH, studioMode, stageZoom]);
 
   // ZERO-REACT-RERENDER Background Capture Loop (updates desktopImgRef & windowImgsRef directly)
   useEffect(() => {
@@ -1582,58 +1623,290 @@ export const StageCompositor: React.FC<StageCompositorProps> = React.memo(({
     }
   };
 
-  const selectedSourceObj = (studioMode ? previewScene : activeScene).sources.find(
+  const editableScene = studioMode ? previewScene : activeScene;
+  const selectedSourceObj = editableScene.sources.find(
     (s) => s.id === selectedSourceId
   );
 
+  const hasCropOnSelected =
+    selectedSourceObj &&
+    (selectedSourceObj.layout.cropTop > 0 ||
+      selectedSourceObj.layout.cropBottom > 0 ||
+      selectedSourceObj.layout.cropLeft > 0 ||
+      selectedSourceObj.layout.cropRight > 0);
+
+  // Quick Transform Helpers for Toolbar & Right-Click Menu
+  const applyFitFullscreen = (src: StageSource, sceneId: string) => {
+    onUpdateSource(sceneId, {
+      ...src,
+      layout: {
+        ...src.layout,
+        x: 0,
+        y: 0,
+        width: stageW,
+        height: stageH,
+        cropTop: 0,
+        cropBottom: 0,
+        cropLeft: 0,
+        cropRight: 0,
+      },
+    });
+  };
+
+  const applyCenterOnStage = (src: StageSource, sceneId: string) => {
+    onUpdateSource(sceneId, {
+      ...src,
+      layout: {
+        ...src.layout,
+        x: Math.round((stageW - src.layout.width) / 2),
+        y: Math.round((stageH - src.layout.height) / 2),
+      },
+    });
+  };
+
+  const applyResetCrop = (src: StageSource, sceneId: string) => {
+    onUpdateSource(sceneId, {
+      ...src,
+      layout: {
+        ...src.layout,
+        cropTop: 0,
+        cropBottom: 0,
+        cropLeft: 0,
+        cropRight: 0,
+      },
+    });
+  };
+
+  const handleCanvasContextMenu = (
+    e: React.MouseEvent<HTMLCanvasElement>,
+    targetScene: Scene
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const { x: mx, y: my } = getCanvasCoords(e, e.currentTarget);
+
+    // Hit-test top-down to select the layer under the right-click cursor
+    const topDown = [...targetScene.sources]
+      .filter((s) => s.layout.visible)
+      .sort((a, b) => b.zOrder - a.zOrder);
+
+    let hitSource: StageSource | undefined;
+    for (const src of topDown) {
+      const { drawX, drawY, drawW, drawH } = getCroppedBounds(src);
+      if (mx >= drawX && mx <= drawX + drawW && my >= drawY && my <= drawY + drawH) {
+        hitSource = src;
+        break;
+      }
+    }
+
+    const targetSrc = hitSource || selectedSourceObj;
+    if (!targetSrc) return;
+
+    onSelectSource(targetSrc.id);
+    const menuX = Math.min(window.innerWidth - 260, Math.max(12, e.clientX));
+    const menuY = Math.min(window.innerHeight - 340, Math.max(48, e.clientY));
+    setContextMenu({
+      x: menuX,
+      y: menuY,
+      source: targetSrc,
+      sceneId: targetScene.id,
+    });
+  };
+
   return (
-    <div className="relative flex-1 flex flex-col bg-[#05070B] border-b border-slate-800/80 overflow-hidden select-none">
-      {/* Stage Sub-Header */}
-      <div className="h-9 px-3 bg-[#0B0E17] border-b border-slate-800/80 flex items-center justify-between text-xs shrink-0">
-        <div className="flex items-center gap-2">
+    <div
+      className="relative flex-1 flex flex-col bg-[#05070B] border-b border-slate-800/80 overflow-hidden select-none"
+      onClick={() => {
+        if (contextMenu) setContextMenu(null);
+      }}
+    >
+      {/* Stage Sub-Header: Quick Capture Selector (Module 1) + Quick Transform & Zoom (Module 2) */}
+      <div className="h-9 px-3 bg-[#0B0E17] border-b border-slate-800/80 flex items-center justify-between text-xs shrink-0 gap-2 overflow-x-auto">
+        <div className="flex items-center gap-1.5 shrink-0">
           <span className="px-2 py-0.5 rounded bg-slate-800/90 text-[#00F0FF] font-mono font-semibold text-[11px]">
-            {isPortraitCanvas ? "9:16 VERTICAL (1080×1920)" : "16:9 UHD/FHD (1920×1080)"}
+            {isPortraitCanvas ? "9:16 (1080×1920)" : "16:9 (1920×1080)"}
           </span>
           <button
             onClick={onToggleSnapToGrid}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition ${
+            className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium transition ${
               snapToGrid
                 ? "bg-[#00F0FF]/15 text-[#00F0FF] border border-[#00F0FF]/40"
                 : "bg-slate-900 text-slate-400 border border-slate-800 hover:text-slate-200"
             }`}
             title="Ajuste magnético a bordes y centro del escenario (SnapToGrid)"
           >
-            <Grid className="w-3.5 h-3.5" />
-            Guías Magnéticas
+            <Grid className="w-3 h-3" />
+            <span>Guías</span>
           </button>
 
           {selectedSourceObj && (
-            <div className="flex items-center gap-1.5 ml-2 pl-2 border-l border-slate-800 text-slate-300">
-              <span className="text-slate-400">Capa activa:</span>
-              <span className="font-semibold text-[#00F0FF]">
+            <div className="flex items-center gap-1.5 ml-1 pl-2 border-l border-slate-800 text-slate-300">
+              <span className="font-semibold text-[#00F0FF] max-w-[150px] truncate">
                 {selectedSourceObj.name}
               </span>
               {selectedSourceObj.layout.lockPosition && (
                 <Lock className="w-3 h-3 text-amber-400" />
               )}
-              <button
-                onClick={() =>
-                  onOpenSourceProperties(
-                    selectedSourceObj,
-                    studioMode ? previewScene.id : activeScene.id
-                  )
-                }
-                className="ml-1 px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center gap-1 text-[11px]"
-              >
-                <Settings className="w-3 h-3 text-[#00F0FF]" />
-                Propiedades
-              </button>
+
+              {/* MODULE 1: Direct Quick Monitor Selector when "screen" source is active */}
+              {selectedSourceObj.type === "screen" && (
+                <div className="flex items-center gap-1 ml-1">
+                  <select
+                    value={selectedSourceObj.monitorIndex ?? 0}
+                    onClick={() => refreshMonitorsList()}
+                    onChange={(e) =>
+                      onUpdateSource(editableScene.id, {
+                        ...selectedSourceObj,
+                        monitorIndex: Number(e.target.value),
+                      })
+                    }
+                    className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-slate-100 focus:border-[#00F0FF] outline-none max-w-[190px]"
+                    title="Seleccionar Monitor de Captura en Directo"
+                  >
+                    {monitors.length > 0 ? (
+                      monitors.map((m) => (
+                        <option key={m.index} value={m.index}>
+                          🖥️ {m.name}
+                        </option>
+                      ))
+                    ) : (
+                      <option value={0}>🖥️ Monitor Principal #1</option>
+                    )}
+                  </select>
+                  <button
+                    onClick={() =>
+                      onUpdateSource(editableScene.id, {
+                        ...selectedSourceObj,
+                        showCursor: selectedSourceObj.showCursor === false,
+                      })
+                    }
+                    className={`px-1.5 py-0.5 rounded border text-[10px] font-medium transition ${
+                      selectedSourceObj.showCursor !== false
+                        ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
+                        : "bg-slate-900 border-slate-800 text-slate-400"
+                    }`}
+                    title="Mostrar u ocultar el cursor del ratón en la captura de pantalla"
+                  >
+                    🖱️ Cursor: {selectedSourceObj.showCursor !== false ? "Sí" : "No"}
+                  </button>
+                </div>
+              )}
+
+              {/* MODULE 1: Direct Quick Window / Game Selector when "window" source is active */}
+              {selectedSourceObj.type === "window" && (
+                <div className="flex items-center gap-1 ml-1">
+                  <select
+                    value={selectedSourceObj.windowHwnd || 0}
+                    onChange={(e) => {
+                      const hwndVal = Number(e.target.value);
+                      const winObj = openWindows.find((w) => w.hwnd === hwndVal);
+                      onUpdateSource(editableScene.id, {
+                        ...selectedSourceObj,
+                        windowHwnd: hwndVal || undefined,
+                        windowTitle: winObj?.title || selectedSourceObj.windowTitle,
+                      });
+                    }}
+                    className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-slate-100 focus:border-[#00F0FF] outline-none max-w-[210px]"
+                    title="Seleccionar Ventana o Juego Abierto"
+                  >
+                    <option value={0}>🎮 Elegir ventana / juego...</option>
+                    {openWindows.map((w) => (
+                      <option key={w.hwnd} value={w.hwnd}>
+                        {w.title.slice(0, 40)} ({w.width}×{w.height})
+                      </option>
+                    ))}
+                  </select>
+                  {onRefreshWindows && (
+                    <button
+                      onClick={onRefreshWindows}
+                      className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200"
+                      title="Actualizar lista de ventanas abiertas"
+                    >
+                      <RefreshCw className="w-3 h-3 text-[#00F0FF]" />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* MODULE 2: Quick Transform Buttons right on the Stage Header */}
+              <div className="flex items-center gap-1 ml-1 pl-1.5 border-l border-slate-800">
+                <button
+                  onClick={() =>
+                    applyFitFullscreen(selectedSourceObj, editableScene.id)
+                  }
+                  className="px-1.5 py-0.5 rounded bg-slate-800/90 hover:bg-slate-700 text-slate-200 flex items-center gap-1 text-[10px]"
+                  title="Ajustar fuente a pantalla completa (1920×1080)"
+                >
+                  <Maximize2 className="w-2.5 h-2.5 text-[#00F0FF]" />
+                  <span>Ajustar</span>
+                </button>
+                <button
+                  onClick={() =>
+                    applyCenterOnStage(selectedSourceObj, editableScene.id)
+                  }
+                  className="px-1.5 py-0.5 rounded bg-slate-800/90 hover:bg-slate-700 text-slate-200 flex items-center gap-1 text-[10px]"
+                  title="Centrar fuente en el escenario"
+                >
+                  <Crosshair className="w-2.5 h-2.5 text-emerald-400" />
+                  <span>Centrar</span>
+                </button>
+                {hasCropOnSelected && (
+                  <button
+                    onClick={() =>
+                      applyResetCrop(selectedSourceObj, editableScene.id)
+                    }
+                    className="px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 hover:bg-emerald-500/30 text-emerald-300 flex items-center gap-1 text-[10px] font-semibold"
+                    title="Restablecer recorte (quitar bordes verdes Alt+Drag)"
+                  >
+                    <Scissors className="w-2.5 h-2.5" />
+                    <span>Quitar Recorte</span>
+                  </button>
+                )}
+                <button
+                  onClick={() =>
+                    onOpenSourceProperties(selectedSourceObj, editableScene.id)
+                  }
+                  className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center gap-1 text-[10px]"
+                  title="Abrir Inspector Completo (Chroma Key, Máscaras, Color, 3D)"
+                >
+                  <Settings className="w-3 h-3 text-[#00F0FF]" />
+                  <span>Propiedades</span>
+                </button>
+              </div>
             </div>
           )}
         </div>
 
-        {/* Collapsible Whiteboard Telestrator Toggle Button */}
-        <div className="flex items-center gap-2">
+        {/* Right Side: Stage Zoom Controls + Collapsible Whiteboard Telestrator Toggle */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center bg-[#070A12] border border-slate-800 rounded px-1 py-0.5 text-[10px] font-mono text-slate-300">
+            <button
+              onClick={() =>
+                setStageZoom((z) => Math.max(0.5, Number((z - 0.15).toFixed(2))))
+              }
+              className="px-1 hover:text-[#00F0FF]"
+              title="Alejar vista del lienzo"
+            >
+              <ZoomOut className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => setStageZoom(1.0)}
+              className="px-1.5 hover:text-[#00F0FF]"
+              title="Restablecer Zoom Automático (100%)"
+            >
+              {Math.round(stageZoom * 100)}%
+            </button>
+            <button
+              onClick={() =>
+                setStageZoom((z) => Math.min(1.6, Number((z + 0.15).toFixed(2))))
+              }
+              className="px-1 hover:text-[#00F0FF]"
+              title="Acercar vista del lienzo"
+            >
+              <ZoomIn className="w-3 h-3" />
+            </button>
+          </div>
+
           {wbStrokes.length > 0 && !showWhiteboardBar && (
             <button
               onClick={() => setWbStrokes([])}
@@ -1655,17 +1928,17 @@ export const StageCompositor: React.FC<StageCompositorProps> = React.memo(({
                 return next;
               });
             }}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[11px] font-semibold border transition ${
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold border transition ${
               showWhiteboardBar
                 ? "bg-[#00F0FF] text-slate-950 border-[#00F0FF] shadow-[0_0_12px_rgba(0,240,255,0.4)]"
                 : "bg-[#070A12] text-slate-300 border-slate-800 hover:border-slate-700 hover:text-white"
             }`}
             title="Desplegar barra flotante de Pizarra Táctica en Vivo (Whiteboard Telestrator)"
           >
-            <span>✏️ Pizarra en Vivo</span>
+            <span>✏️ Pizarra</span>
             {showWhiteboardBar && (
               <span className="text-[10px] font-mono uppercase px-1 rounded bg-slate-950/25">
-                ACTIVA
+                ON
               </span>
             )}
           </button>
@@ -1756,10 +2029,191 @@ export const StageCompositor: React.FC<StageCompositorProps> = React.memo(({
         </div>
       )}
 
+      {/* MODULE 2: STUDIO RIGHT-CLICK CONTEXT MENU ON CANVAS */}
+      {contextMenu && (
+        <div
+          style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
+          onClick={(e) => e.stopPropagation()}
+          className="fixed z-50 w-64 rounded-xl bg-[#0D121F]/95 backdrop-blur-md border border-slate-700 shadow-[0_18px_50px_rgba(0,0,0,0.9)] py-1.5 text-xs text-slate-200"
+        >
+          <div className="px-3 py-1.5 border-b border-slate-800 flex items-center justify-between">
+            <span className="font-bold text-[#00F0FF] truncate">
+              {contextMenu.source.name}
+            </span>
+            <span className="text-[10px] font-mono text-slate-400 uppercase">
+              {contextMenu.source.type}
+            </span>
+          </div>
+
+          <button
+            onClick={() => {
+              onOpenSourceProperties(contextMenu.source, contextMenu.sceneId);
+              setContextMenu(null);
+            }}
+            className="w-full px-3 py-1.5 text-left hover:bg-[#00F0FF]/15 hover:text-[#00F0FF] flex items-center gap-2"
+          >
+            <Settings className="w-3.5 h-3.5 text-[#00F0FF]" />
+            <span>Propiedades, Chroma Key y Efectos...</span>
+          </button>
+
+          <div className="my-1 border-t border-slate-800/80" />
+
+          <button
+            onClick={() => {
+              applyFitFullscreen(contextMenu.source, contextMenu.sceneId);
+              setContextMenu(null);
+            }}
+            className="w-full px-3 py-1.5 text-left hover:bg-slate-800 flex items-center gap-2"
+          >
+            <Maximize2 className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Ajustar a Pantalla Completa ({stageW}×{stageH})</span>
+          </button>
+
+          <button
+            onClick={() => {
+              applyCenterOnStage(contextMenu.source, contextMenu.sceneId);
+              setContextMenu(null);
+            }}
+            className="w-full px-3 py-1.5 text-left hover:bg-slate-800 flex items-center gap-2"
+          >
+            <Crosshair className="w-3.5 h-3.5 text-[#00F0FF]" />
+            <span>Centrar en el Escenario</span>
+          </button>
+
+          <button
+            onClick={() => {
+              applyResetCrop(contextMenu.source, contextMenu.sceneId);
+              setContextMenu(null);
+            }}
+            className="w-full px-3 py-1.5 text-left hover:bg-slate-800 flex items-center gap-2"
+          >
+            <Scissors className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Restablecer Recorte (Crop 0%)</span>
+          </button>
+
+          <button
+            onClick={() => {
+              onUpdateSource(contextMenu.sceneId, {
+                ...contextMenu.source,
+                layout: {
+                  ...contextMenu.source.layout,
+                  rotX: 0,
+                  rotY: 0,
+                  rotZ: 0,
+                },
+              });
+              setContextMenu(null);
+            }}
+            className="w-full px-3 py-1.5 text-left hover:bg-slate-800 flex items-center gap-2"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+            <span>Restablecer Giro 3D (0°)</span>
+          </button>
+
+          <button
+            onClick={() => {
+              onUpdateSource(contextMenu.sceneId, {
+                ...contextMenu.source,
+                layout: {
+                  ...contextMenu.source.layout,
+                  flipH: !contextMenu.source.layout.flipH,
+                },
+              });
+              setContextMenu(null);
+            }}
+            className="w-full px-3 py-1.5 text-left hover:bg-slate-800 flex items-center gap-2"
+          >
+            <FlipHorizontal className="w-3.5 h-3.5 text-purple-400" />
+            <span>Voltear Horizontalmente (Espejo)</span>
+          </button>
+
+          <div className="my-1 border-t border-slate-800/80" />
+
+          <button
+            onClick={() => {
+              onUpdateSource(contextMenu.sceneId, {
+                ...contextMenu.source,
+                zOrder: contextMenu.source.zOrder + 2,
+              });
+              setContextMenu(null);
+            }}
+            className="w-full px-3 py-1.5 text-left hover:bg-slate-800 flex items-center gap-2"
+          >
+            <ArrowUp className="w-3.5 h-3.5 text-slate-300" />
+            <span>Traer al Frente (Subir Capa)</span>
+          </button>
+
+          <button
+            onClick={() => {
+              onUpdateSource(contextMenu.sceneId, {
+                ...contextMenu.source,
+                zOrder: Math.max(0, contextMenu.source.zOrder - 2),
+              });
+              setContextMenu(null);
+            }}
+            className="w-full px-3 py-1.5 text-left hover:bg-slate-800 flex items-center gap-2"
+          >
+            <ArrowDown className="w-3.5 h-3.5 text-slate-300" />
+            <span>Enviar al Fondo (Bajar Capa)</span>
+          </button>
+
+          <button
+            onClick={() => {
+              onUpdateSource(contextMenu.sceneId, {
+                ...contextMenu.source,
+                layout: {
+                  ...contextMenu.source.layout,
+                  lockPosition: !contextMenu.source.layout.lockPosition,
+                },
+              });
+              setContextMenu(null);
+            }}
+            className="w-full px-3 py-1.5 text-left hover:bg-slate-800 flex items-center gap-2"
+          >
+            {contextMenu.source.layout.lockPosition ? (
+              <>
+                <Unlock className="w-3.5 h-3.5 text-amber-400" />
+                <span>Desbloquear Posición</span>
+              </>
+            ) : (
+              <>
+                <Lock className="w-3.5 h-3.5 text-amber-400" />
+                <span>Bloquear Posición en el Lienzo</span>
+              </>
+            )}
+          </button>
+
+          {onDeleteSource && (
+            <>
+              <div className="my-1 border-t border-slate-800/80" />
+              <button
+                onClick={() => {
+                  onDeleteSource(contextMenu.source.id);
+                  setContextMenu(null);
+                }}
+                className="w-full px-3 py-1.5 text-left text-rose-400 hover:bg-rose-500/15 flex items-center gap-2"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Eliminar Fuente de la Escena</span>
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Central Stage Canvas Area (Measured by ResizeObserver for 1:1 16:9 / 9:16 Aspect Ratio) */}
       <div
         ref={stageContainerRef}
-        className="flex-1 min-h-0 flex items-center justify-center gap-3 p-2.5 overflow-hidden bg-[radial-gradient(ellipse_at_center,_#0D1322_0%,_#05070B_100%)]"
+        onWheel={(e) => {
+          if (e.ctrlKey) {
+            e.preventDefault();
+            const delta = e.deltaY < 0 ? 0.1 : -0.1;
+            setStageZoom((z) =>
+              Math.max(0.5, Math.min(1.6, Number((z + delta).toFixed(2))))
+            );
+          }
+        }}
+        className="flex-1 min-h-0 flex items-center justify-center gap-3 p-2.5 overflow-auto bg-[radial-gradient(ellipse_at_center,_#0D1322_0%,_#05070B_100%)]"
       >
         {/* LEFT MONITOR: PREVIEW EDITOR */}
         {studioMode && (
@@ -1791,12 +2245,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = React.memo(({
                     onOpenSourceProperties(selectedSourceObj, previewScene.id);
                   }
                 }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  if (selectedSourceObj) {
-                    onOpenSourceProperties(selectedSourceObj, previewScene.id);
-                  }
-                }}
+                onContextMenu={(e) => handleCanvasContextMenu(e, previewScene)}
                 className="absolute inset-0 w-full h-full block cursor-move"
               />
             </div>
@@ -1851,6 +2300,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = React.memo(({
               width={stageW}
               height={stageH}
               onMouseDown={(e) => {
+                if (contextMenu) setContextMenu(null);
                 if (!studioMode || wbTool !== "select") {
                   handleCanvasMouseDown(e, activeScene);
                 }
@@ -1868,9 +2318,8 @@ export const StageCompositor: React.FC<StageCompositorProps> = React.memo(({
                 }
               }}
               onContextMenu={(e) => {
-                e.preventDefault();
-                if (!studioMode && selectedSourceObj) {
-                  onOpenSourceProperties(selectedSourceObj, activeScene.id);
+                if (!studioMode) {
+                  handleCanvasContextMenu(e, activeScene);
                 }
               }}
               className={`absolute inset-0 w-full h-full block ${
@@ -1899,7 +2348,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = React.memo(({
                   Alt + Tirador: Recortar Borde
                 </span>
                 <span>•</span>
-                <span>Shift + Arrastrar: Rotar 3D</span>
+                <span>Clic Derecho: Menú Rápido</span>
                 <span>•</span>
                 <span>Doble Clic: Propiedades ⚙️</span>
               </div>

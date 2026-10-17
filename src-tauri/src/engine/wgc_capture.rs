@@ -1,8 +1,14 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use image::{codecs::jpeg::JpegEncoder, ImageFormat, RgbImage};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::mem::{size_of, zeroed};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+static MONITORS_CACHE: OnceLock<Mutex<(Instant, Vec<MonitorInfo>)>> = OnceLock::new();
+static WINDOW_FAST_BITBLT_SET: OnceLock<Mutex<HashSet<isize>>> = OnceLock::new();
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{
@@ -28,9 +34,6 @@ const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
 
 /// Excludes or includes all top-level windows belonging to the current Gamecaster Plus process
 /// from capture via Win32 `SetWindowDisplayAffinity`.
-/// NOTE: On Windows 10/11 GDI (`GetDC(NULL)` / `gdigrab`), enabling `WDA_EXCLUDEFROMCAPTURE` causes DWM
-/// to paint the window's region as a solid black rectangle when capturing the full monitor.
-/// Therefore this defaults to `false` unless explicitly toggled by the user for DRM/WGC privacy.
 pub fn set_process_windows_exclude_from_capture(exclude: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     unsafe {
@@ -157,6 +160,11 @@ pub fn enumerate_monitors() -> Vec<MonitorInfo> {
                 is_primary: true,
             });
         }
+
+        let cache = MONITORS_CACHE.get_or_init(|| Mutex::new((Instant::now(), Vec::new())));
+        if let Ok(mut guard) = cache.lock() {
+            *guard = (Instant::now(), monitors.clone());
+        }
         monitors
     }
 
@@ -164,6 +172,24 @@ pub fn enumerate_monitors() -> Vec<MonitorInfo> {
     {
         Vec::new()
     }
+}
+
+/// Fast cached monitor lookup for high-frequency capture loop (refreshes every 6 seconds).
+fn get_cached_monitors() -> Vec<MonitorInfo> {
+    let cache = MONITORS_CACHE.get_or_init(|| {
+        Mutex::new((
+            Instant::now()
+                .checked_sub(Duration::from_secs(60))
+                .unwrap_or_else(Instant::now),
+            Vec::new(),
+        ))
+    });
+    if let Ok(guard) = cache.lock() {
+        if !guard.1.is_empty() && guard.0.elapsed() < Duration::from_secs(6) {
+            return guard.1.clone();
+        }
+    }
+    enumerate_monitors()
 }
 
 /// Draws the live hardware mouse cursor onto `hdc_target` scaled to the capture bounds.
@@ -238,7 +264,7 @@ pub fn capture_desktop_jpeg_base64(
 ) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     unsafe {
-        let monitors = enumerate_monitors();
+        let monitors = get_cached_monitors();
         let mon = monitors
             .get(monitor_index)
             .or_else(|| monitors.first())
@@ -420,7 +446,18 @@ pub fn capture_window_jpeg_base64(
         let hbm_win = CreateCompatibleBitmap(hdc_screen, win_w, win_h);
         let old_win = SelectObject(hdc_win_mem, hbm_win);
 
-        let printed = PrintWindow(hwnd, hdc_win_mem, PW_RENDERFULLCONTENT);
+        let fast_set = WINDOW_FAST_BITBLT_SET.get_or_init(|| Mutex::new(HashSet::new()));
+        let skip_print_window = fast_set
+            .lock()
+            .map(|s| s.contains(&(hwnd as isize)))
+            .unwrap_or(false);
+
+        let printed = if skip_print_window {
+            0
+        } else {
+            PrintWindow(hwnd, hdc_win_mem, PW_RENDERFULLCONTENT)
+        };
+
         let (mut src_x_in_mem, mut src_y_in_mem, mut src_crop_w, mut src_crop_h, mut screen_left, mut screen_top) =
             if printed != 0 {
                 if has_client {
@@ -488,8 +525,11 @@ pub fn capture_window_jpeg_base64(
             DIB_RGB_COLORS,
         );
 
-        // OBS Fallback: if PrintWindow returned an all-black surface, fallback to screen BitBlt crop
+        // OBS Fallback: if PrintWindow returned an all-black surface, cache this HWND for fast BitBlt crop
         if printed != 0 && (lines == 0 || is_bgra_buffer_blank(&bgra_buf)) {
+            if let Ok(mut s) = fast_set.lock() {
+                s.insert(hwnd as isize);
+            }
             let (sx, sy, sw, sh) = if has_client {
                 (
                     client_origin.x,
@@ -587,6 +627,31 @@ fn encode_bgra_to_jpeg_data_url(bgra: &[u8], width: u32, height: u32) -> Result<
 
     let encoded = BASE64.encode(jpeg_buf);
     Ok(format!("data:image/jpeg;base64,{encoded}"))
+}
+
+/// Saves a composed broadcast canvas PNG screenshot (`data:image/png;base64,...`) directly to disk.
+pub fn save_canvas_screenshot_base64(
+    screenshots_dir: &PathBuf,
+    data_url: &str,
+) -> Result<String, String> {
+    std::fs::create_dir_all(screenshots_dir)
+        .map_err(|e| format!("Cannot create screenshots folder: {e}"))?;
+
+    let raw_b64 = data_url
+        .strip_prefix("data:image/png;base64,")
+        .or_else(|| data_url.split(',').nth(1))
+        .unwrap_or(data_url);
+
+    let bytes = BASE64
+        .decode(raw_b64.trim())
+        .map_err(|e| format!("Invalid PNG base64 payload: {e}"))?;
+
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let file_path = screenshots_dir.join(format!("Capture_{timestamp}.png"));
+    std::fs::write(&file_path, bytes)
+        .map_err(|e| format!("Failed to write PNG screenshot: {e}"))?;
+
+    Ok(file_path.to_string_lossy().to_string())
 }
 
 /// Saves a full-resolution PNG screenshot of the primary monitor to disk.
