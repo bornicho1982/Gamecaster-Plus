@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   StageSource,
   Scene,
@@ -37,8 +38,6 @@ interface StageCompositorProps {
   activeTransition: TransitionId;
   transitionDurationMs: number;
   transitionTriggerCount: number;
-  desktopFrameDataUrl: string | null;
-  windowFramesMap: Record<number, string>;
   pgmCanvasRef: React.RefObject<HTMLCanvasElement>;
 }
 
@@ -54,7 +53,7 @@ interface DragState {
   initialSource: StageSource;
 }
 
-export const StageCompositor: React.FC<StageCompositorProps> = ({
+export const StageCompositor: React.FC<StageCompositorProps> = React.memo(({
   activeScene,
   previewScene,
   studioMode,
@@ -69,22 +68,41 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
   activeTransition,
   transitionDurationMs,
   transitionTriggerCount,
-  desktopFrameDataUrl,
-  windowFramesMap,
   pgmCanvasRef,
 }) => {
+  const stageContainerRef = useRef<HTMLDivElement | null>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const pgmGizmoCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const snapshotCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const chromaOffscreenRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Double-buffered media element caches (prevents canvas flicker while decoding)
+  // Exact aspect-ratio fitted dimensions (prevents any CSS canvas stretching)
+  const [fittedSize, setFittedSize] = useState<{ w: number; h: number }>({
+    w: 880,
+    h: 495,
+  });
+
+  // Double-buffered media element caches (updated directly via refs with ZERO React re-renders)
   const desktopImgRef = useRef<HTMLImageElement | null>(null);
   const windowImgsRef = useRef<Record<number, HTMLImageElement>>({});
   const customImgsRef = useRef<Record<string, HTMLImageElement>>({});
   const videoElementsRef = useRef<Record<string, HTMLVideoElement>>({});
   const cameraVideosRef = useRef<Record<string, HTMLVideoElement>>({});
   const cameraStreamsRef = useRef<Record<string, MediaStream>>({});
+
+  // Latest scenes ref for the background capture loop
+  const scenesRef = useRef<{ active: Scene; preview: Scene; studio: boolean }>({
+    active: activeScene,
+    preview: previewScene,
+    studio: studioMode,
+  });
+  useEffect(() => {
+    scenesRef.current = {
+      active: activeScene,
+      preview: previewScene,
+      studio: studioMode,
+    };
+  }, [activeScene, previewScene, studioMode]);
 
   // Transition animation state
   const transitionStartRef = useRef<number>(0);
@@ -105,31 +123,117 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
   const stageW = isPortraitCanvas ? 1080 : 1920;
   const stageH = isPortraitCanvas ? 1920 : 1080;
 
-  // Double-buffer desktop Image so pgmCanvas never flickers mid-decode
+  // Compute exact 16:9 (or 9:16) pixel box inside stageContainerRef via ResizeObserver
   useEffect(() => {
-    if (!desktopFrameDataUrl) return;
-    const img = new Image();
-    img.onload = () => {
-      desktopImgRef.current = img;
-    };
-    img.src = desktopFrameDataUrl;
-  }, [desktopFrameDataUrl]);
+    const el = stageContainerRef.current;
+    if (!el) return;
 
-  // Double-buffer window Images so window capture never flickers mid-decode
+    const updateSize = () => {
+      const rect = el.getBoundingClientRect();
+      const padX = studioMode ? 110 : 24;
+      const padY = studioMode ? 48 : 20;
+      const availW = Math.max(240, (rect.width - padX) / (studioMode ? 2 : 1));
+      const availH = Math.max(160, rect.height - padY);
+      const scale = Math.min(availW / stageW, availH / stageH);
+      setFittedSize({
+        w: Math.max(160, Math.floor(stageW * scale)),
+        h: Math.max(90, Math.floor(stageH * scale)),
+      });
+    };
+
+    updateSize();
+    const ro = new ResizeObserver(updateSize);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [stageW, stageH, studioMode]);
+
+  // ZERO-REACT-RERENDER Background Capture Loop (updates desktopImgRef & windowImgsRef directly)
   useEffect(() => {
-    Object.entries(windowFramesMap).forEach(([hwndStr, dataUrl]) => {
-      const hwnd = Number(hwndStr);
-      if (!dataUrl) return;
-      const img = new Image();
-      img.onload = () => {
-        windowImgsRef.current[hwnd] = img;
-      };
-      img.src = dataUrl;
-    });
-  }, [windowFramesMap]);
+    let cancelled = false;
+    let timerId: ReturnType<typeof setTimeout>;
+
+    const pollFrames = async () => {
+      if (cancelled) return;
+      try {
+        const { active, preview, studio } = scenesRef.current;
+        const allSources = [
+          ...active.sources,
+          ...(studio ? preview.sources : []),
+        ];
+
+        const screenSrc = allSources.find(
+          (s) => s.type === "screen" && s.layout.visible
+        );
+        const needDesktop =
+          Boolean(screenSrc) ||
+          allSources.some((s) => s.type === "window" && s.layout.visible && !s.windowHwnd);
+
+        if (needDesktop) {
+          const showCursor = screenSrc ? screenSrc.showCursor !== false : true;
+          const monitorIndex = screenSrc?.monitorIndex ?? 0;
+
+          const frame = await invoke<string>("capture_live_frame", {
+            width: 960,
+            height: 540,
+            showCursor,
+            monitorIndex,
+          });
+
+          if (!cancelled && frame.startsWith("data:image/jpeg;base64,")) {
+            await new Promise<void>((resolve) => {
+              const img = new Image();
+              img.onload = () => {
+                desktopImgRef.current = img;
+                resolve();
+              };
+              img.onerror = () => resolve();
+              img.src = frame;
+            });
+          }
+        }
+
+        const winSources = allSources.filter(
+          (s) => s.type === "window" && s.layout.visible && s.windowHwnd
+        );
+        for (const ws of winSources) {
+          if (cancelled || !ws.windowHwnd) break;
+          const hwnd = ws.windowHwnd;
+          const wFrame = await invoke<string>("capture_window_frame", {
+            hwnd,
+            width: 960,
+            height: 540,
+            showCursor: ws.showCursor !== false,
+            fallbackTitle: ws.windowTitle || null,
+          });
+          if (!cancelled && wFrame.startsWith("data:image/jpeg;base64,")) {
+            await new Promise<void>((resolve) => {
+              const img = new Image();
+              img.onload = () => {
+                windowImgsRef.current[hwnd] = img;
+                resolve();
+              };
+              img.onerror = () => resolve();
+              img.src = wFrame;
+            });
+          }
+        }
+      } catch {
+        // Ignore outside Tauri
+      }
+
+      if (!cancelled) {
+        timerId = setTimeout(pollFrames, 55);
+      }
+    };
+
+    pollFrames();
+    return () => {
+      cancelled = true;
+      clearTimeout(timerId);
+    };
+  }, []);
 
   // Manage camera & media video elements across active and preview scenes
-  // Prioritizes real physical USB webcams over disconnected virtual cameras (PRISM, XSplit, POCO X3, OBS)
   useEffect(() => {
     const allSources = [
       ...activeScene.sources,
@@ -151,7 +255,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
             try {
               let preferredDeviceId = src.cameraDeviceId;
               if (!preferredDeviceId || preferredDeviceId === "default_cam") {
-                // Request brief permission or enumerate devices to pick physical camera first
                 const devices = await navigator.mediaDevices.enumerateDevices();
                 const videoInputs = devices.filter((d) => d.kind === "videoinput");
                 const physicalCam = videoInputs.find(
@@ -179,7 +282,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
               vid.srcObject = stream;
               await vid.play().catch(() => {});
 
-              // If labels were initially empty before permission, re-check if we got stuck on a virtual cam
               const trackLabel = stream.getVideoTracks()[0]?.label || "";
               if (/virtual|xsplit|prism|poco/i.test(trackLabel) && !src.cameraDeviceId) {
                 const refreshed = await navigator.mediaDevices.enumerateDevices();
@@ -342,7 +444,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
     return filters.length > 0 ? filters.join(" ") : "none";
   };
 
-  // Apply OBS Studio YCbCr Chroma Key V2 + Spill Suppression ONLY when explicitly enabled by user (Golden Rule #3)
+  // Apply OBS Studio YCbCr Chroma Key V2 + Spill Suppression ONLY when explicitly enabled by user
   const getChromaKeyedDrawable = (
     videoEl: HTMLVideoElement,
     src: StageSource
@@ -444,7 +546,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
   };
 
   // Draw UI Selection Gizmo, 8 Handles (Cyan for Resize, Green for Cropped Edges), and Snap Guides
-  // Rendered onto a separate transparent overlay canvas for PGM so recordings stay 100% clean!
   const renderGizmoOverlay = useCallback(
     (ctx: CanvasRenderingContext2D, scene: Scene) => {
       ctx.clearRect(0, 0, stageW, stageH);
@@ -459,7 +560,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         const hasCrop = cropTop > 0 || cropBottom > 0 || cropLeft > 0 || cropRight > 0;
 
         ctx.save();
-        // If cropped, draw faint dashed outer full bounds
         if (hasCrop) {
           ctx.strokeStyle = "rgba(148, 163, 184, 0.35)";
           ctx.lineWidth = 1.5;
@@ -468,7 +568,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           ctx.setLineDash([]);
         }
 
-        // Main bounding box around visible (cropped) area
         ctx.strokeStyle = lockPosition ? "#F59E0B" : "#00F0FF";
         ctx.lineWidth = 3;
         ctx.strokeRect(drawX, drawY, drawW, drawH);
@@ -501,7 +600,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           ctx.stroke();
         }
 
-        // Source Label Pill
         const cropBadge = hasCrop ? " [RECORTADO]" : "";
         const labelText = `${selectedSrc.name} (${Math.round(drawW)}×${Math.round(drawH)})${cropBadge}`;
         ctx.font = "bold 18px Inter, sans-serif";
@@ -512,7 +610,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         ctx.fillStyle = "#04070E";
         ctx.fillText(labelText, drawX + 10, pillY + 20);
 
-        // 8 Resize & Crop Handles positioned on visible (cropped) rectangle
         if (!lockPosition) {
           const handleSize = 14;
           const half = handleSize / 2;
@@ -537,7 +634,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         ctx.restore();
       }
 
-      // Magnetic Snap Alignment Guides
       if (snapGuides.x !== undefined || snapGuides.y !== undefined) {
         ctx.save();
         ctx.strokeStyle = "#FF2A54";
@@ -561,7 +657,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
     [stageW, stageH, selectedSourceId, snapGuides]
   );
 
-  // Render a single Scene onto a target 2D context (CLEAN BROADCAST FEED — NO GIZMOS!)
+  // Render a single Scene onto a target 2D context (CLEAN BROADCAST FEED)
   const renderSceneToContext = useCallback(
     (
       ctx: CanvasRenderingContext2D,
@@ -569,13 +665,11 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
       drawGizmosInline: boolean,
       nowMs: number
     ) => {
-      // 1. Deep Obsidian Stage Backdrop
       ctx.save();
       ctx.fillStyle = "#060911";
       ctx.fillRect(0, 0, stageW, stageH);
       ctx.restore();
 
-      // 2. Sort visible sources by zOrder ascending
       const sortedSources = [...scene.sources]
         .filter((s) => s.layout.visible)
         .sort((a, b) => a.zOrder - b.zOrder);
@@ -596,11 +690,8 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         if (width <= 4 || height <= 4) continue;
 
         ctx.save();
-
-        // Opacity
         ctx.globalAlpha = Math.max(0, Math.min(1, src.colorKey.opacity / 100));
 
-        // Center transform for 2D/3D rotation and flip
         const cx = x + width / 2;
         const cy = y + height / 2;
         ctx.translate(cx, cy);
@@ -650,7 +741,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           }
         }
 
-        // Drop Shadow
         if (src.effects.dropShadowEnabled) {
           ctx.shadowColor = src.effects.dropShadowColor || "rgba(0,0,0,0.85)";
           ctx.shadowBlur = src.effects.dropShadowBlur;
@@ -658,7 +748,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           ctx.shadowOffsetY = src.effects.dropShadowDistance * 0.7;
         }
 
-        // Shape Mask Clipping (Rectangle, Rounded, Circle/Oval, Diamond)
         ctx.beginPath();
         const mask = src.effects.maskShape;
         if (mask === "circle") {
@@ -692,7 +781,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
 
         ctx.filter = buildCssFilterForSource(src);
 
-        // Draw Source Content by Type
         if (src.type === "screen") {
           const dImg = desktopImgRef.current;
           if (dImg && dImg.complete && dImg.naturalWidth > 0) {
@@ -870,7 +958,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
 
         ctx.filter = "none";
 
-        // Custom Border
         if (src.effects.borderEnabled && src.effects.borderThickness > 0) {
           ctx.strokeStyle = src.effects.borderColor || "#00F0FF";
           ctx.lineWidth = src.effects.borderThickness * 2;
@@ -970,7 +1057,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
     [wbStrokes]
   );
 
-  // Apply GPU Transition Shader between snapshotCanvasRef (Old Scene) and Newly Rendered Scene
+  // Apply GPU Transition Shader between snapshotCanvasRef and Newly Rendered Scene
   const applyTransitionEffect = (
     ctx: CanvasRenderingContext2D,
     oldSnap: HTMLCanvasElement,
@@ -1182,7 +1269,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
     let rafId = 0;
 
     const renderLoop = (nowMs: number) => {
-      // 1. Render Clean Program (PGM) Canvas (100% free of selection gizmos for recording/streaming)
       const pgm = pgmCanvasRef.current;
       if (pgm) {
         const ctx = pgm.getContext("2d");
@@ -1208,7 +1294,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         }
       }
 
-      // 2. Render Interactive Gizmo Overlay on top of PGM when not in Studio Mode
       if (!studioMode && pgmGizmoCanvasRef.current) {
         const gctx = pgmGizmoCanvasRef.current.getContext("2d");
         if (gctx) {
@@ -1221,7 +1306,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         }
       }
 
-      // 3. Render Studio Mode Preview Canvas if Studio Mode (`SplitView`) is enabled
       if (studioMode && previewCanvasRef.current) {
         const pctx = previewCanvasRef.current.getContext("2d");
         if (pctx) {
@@ -1309,7 +1393,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
       return;
     }
 
-    // 1. Check if clicking a handle on the currently selected source
     const currentSelected = targetScene.sources.find(
       (s) => s.id === selectedSourceId && s.layout.visible
     );
@@ -1329,7 +1412,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
       }
     }
 
-    // 2. Hit-test visible sources from top Z-order to bottom Z-order using their visible cropped bounds
     const topDown = [...targetScene.sources]
       .filter((s) => s.layout.visible)
       .sort((a, b) => b.zOrder - a.zOrder);
@@ -1444,7 +1526,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
       next.layout.width = Math.round(width);
       next.layout.height = Math.round(height);
     } else if (dragState.mode === "crop") {
-      // OBS Studio / XSplit style Alt + Drag edge cropping per handle
       const h = dragState.handle || "se";
       const w = Math.max(64, init.layout.width);
       const ht = Math.max(48, init.layout.height);
@@ -1507,8 +1588,8 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
 
   return (
     <div className="relative flex-1 flex flex-col bg-[#05070B] border-b border-slate-800/80 overflow-hidden select-none">
-      {/* Stage Sub-Header (Clean & Uncluttered) */}
-      <div className="h-9 px-3 bg-[#0B0E17] border-b border-slate-800/80 flex items-center justify-between text-xs">
+      {/* Stage Sub-Header */}
+      <div className="h-9 px-3 bg-[#0B0E17] border-b border-slate-800/80 flex items-center justify-between text-xs shrink-0">
         <div className="flex items-center gap-2">
           <span className="px-2 py-0.5 rounded bg-slate-800/90 text-[#00F0FF] font-mono font-semibold text-[11px]">
             {isPortraitCanvas ? "9:16 VERTICAL (1080×1920)" : "16:9 UHD/FHD (1920×1080)"}
@@ -1551,7 +1632,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           )}
         </div>
 
-        {/* Collapsible Whiteboard Telestrator Toggle Button (`whiteboardoverlayplg.plg`) */}
+        {/* Collapsible Whiteboard Telestrator Toggle Button */}
         <div className="flex items-center gap-2">
           {wbStrokes.length > 0 && !showWhiteboardBar && (
             <button
@@ -1591,7 +1672,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         </div>
       </div>
 
-      {/* FLOATING WHITEBOARD TELESTRATOR BAR (Only visible when toggled ON) */}
+      {/* FLOATING WHITEBOARD TELESTRATOR BAR */}
       {showWhiteboardBar && (
         <div className="absolute top-12 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-[#0B0E17]/95 backdrop-blur-md px-3 py-1.5 rounded-xl border border-[#00F0FF]/50 shadow-[0_10px_30px_rgba(0,0,0,0.85)]">
           <span className="text-[10px] font-mono uppercase tracking-wider text-[#00F0FF] font-bold mr-1">
@@ -1675,25 +1756,28 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         </div>
       )}
 
-      {/* Central Stage Canvas Area (Single PGM or Dual SplitView Studio Mode) */}
-      <div className="flex-1 flex items-center justify-center gap-3 p-3 overflow-hidden bg-[radial-gradient(ellipse_at_center,_#0D1322_0%,_#05070B_100%)]">
-        {/* LEFT MONITOR: PREVIEW EDITOR (Only visible when Studio Mode SplitView is ON) */}
+      {/* Central Stage Canvas Area (Measured by ResizeObserver for 1:1 16:9 / 9:16 Aspect Ratio) */}
+      <div
+        ref={stageContainerRef}
+        className="flex-1 min-h-0 flex items-center justify-center gap-3 p-2.5 overflow-hidden bg-[radial-gradient(ellipse_at_center,_#0D1322_0%,_#05070B_100%)]"
+      >
+        {/* LEFT MONITOR: PREVIEW EDITOR */}
         {studioMode && (
-          <div className="flex-1 h-full flex flex-col items-center justify-center min-w-0">
-            <div className="w-full flex items-center justify-between px-2 mb-1.5">
+          <div className="flex flex-col items-center justify-center">
+            <div className="w-full flex items-center justify-between px-1 mb-1">
               <div className="flex items-center gap-2">
                 <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                  VISTA PREVIA (PREVIEW EDITOR)
+                  VISTA PREVIA (PREVIEW)
                 </span>
                 <span className="text-xs font-semibold text-slate-200">
                   {previewScene.name}
                 </span>
               </div>
-              <span className="text-[11px] text-slate-400">
-                Edición privada — Arrastra o redimensiona capas
-              </span>
             </div>
-            <div className="relative flex-1 w-full flex items-center justify-center overflow-hidden rounded-lg border border-amber-500/40 bg-black/90 shadow-inner p-1">
+            <div
+              style={{ width: `${fittedSize.w}px`, height: `${fittedSize.h}px` }}
+              className="relative overflow-hidden rounded-lg border border-amber-500/40 bg-black shadow-inner"
+            >
               <canvas
                 ref={previewCanvasRef}
                 width={stageW}
@@ -1713,9 +1797,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
                     onOpenSourceProperties(selectedSourceObj, previewScene.id);
                   }
                 }}
-                className={`${
-                  isPortraitCanvas ? "h-full w-auto" : "w-full h-auto max-h-full"
-                } object-contain rounded cursor-move`}
+                className="absolute inset-0 w-full h-full block cursor-move"
               />
             </div>
           </div>
@@ -1723,13 +1805,13 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
 
         {/* STUDIO MODE CENTER PUSH LIVE BUTTON */}
         {studioMode && (
-          <div className="flex flex-col items-center justify-center gap-2 px-1">
+          <div className="flex flex-col items-center justify-center gap-2 px-1 shrink-0">
             <button
               onClick={onPushLive}
-              className="px-4 py-3 rounded-lg bg-gradient-to-b from-[#00F0FF] to-[#2563EB] text-slate-950 font-display font-bold text-xs uppercase tracking-wider shadow-[0_0_20px_rgba(0,240,255,0.4)] hover:brightness-110 active:scale-95 transition flex flex-col items-center gap-1"
-              title="Empujar escena de Vista Previa a Emisión en Vivo (BroadcasterPushLive)"
+              className="px-3.5 py-2.5 rounded-lg bg-gradient-to-b from-[#00F0FF] to-[#2563EB] text-slate-950 font-display font-bold text-xs uppercase tracking-wider shadow-[0_0_20px_rgba(0,240,255,0.4)] hover:brightness-110 active:scale-95 transition flex flex-col items-center gap-1"
+              title="Empujar escena de Vista Previa a Emisión en Vivo"
             >
-              <ArrowRightLeft className="w-5 h-5" />
+              <ArrowRightLeft className="w-4 h-4" />
               <span>PUSH LIVE</span>
               <span className="text-[9px] font-mono opacity-80">
                 {activeTransition.toUpperCase()} ({transitionDurationMs}ms)
@@ -1739,9 +1821,9 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         )}
 
         {/* RIGHT / MAIN MONITOR: LIVE PROGRAM OUTPUT (PGM) */}
-        <div className="flex-1 h-full flex flex-col items-center justify-center min-w-0">
+        <div className="flex flex-col items-center justify-center">
           {studioMode && (
-            <div className="w-full flex items-center justify-between px-2 mb-1.5">
+            <div className="w-full flex items-center justify-between px-1 mb-1">
               <div className="flex items-center gap-2">
                 <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-rose-500/20 text-rose-400 border border-rose-500/40 flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping" />
@@ -1751,75 +1833,66 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
                   {activeScene.name}
                 </span>
               </div>
-              <span className="text-[11px] font-mono text-slate-400">
-                60.0 FPS • Direct3D / Canvas Compositor
-              </span>
             </div>
           )}
 
+          {/* Exact 16:9 / 9:16 Fitted Stage Container */}
           <div
-            className={`relative flex-1 w-full flex items-center justify-center overflow-hidden rounded-lg border ${
+            style={{ width: `${fittedSize.w}px`, height: `${fittedSize.h}px` }}
+            className={`relative overflow-hidden rounded-lg border ${
               studioMode
                 ? "border-rose-500/50"
                 : "border-slate-800/90 hover:border-[#00F0FF]/50"
-            } bg-black/95 shadow-[0_0_35px_rgba(0,0,0,0.85)] p-1 transition`}
+            } bg-black shadow-[0_0_35px_rgba(0,0,0,0.85)] transition`}
           >
-            <div
-              className={`relative flex items-center justify-center ${
-                isPortraitCanvas ? "h-full w-auto" : "w-full h-auto max-h-full"
+            {/* CLEAN RECORDABLE PROGRAM CANVAS */}
+            <canvas
+              ref={pgmCanvasRef}
+              width={stageW}
+              height={stageH}
+              onMouseDown={(e) => {
+                if (!studioMode || wbTool !== "select") {
+                  handleCanvasMouseDown(e, activeScene);
+                }
+              }}
+              onMouseMove={(e) => {
+                if (!studioMode || wbTool !== "select") {
+                  handleCanvasMouseMove(e, activeScene);
+                }
+              }}
+              onMouseUp={handleCanvasMouseUp}
+              onMouseLeave={handleCanvasMouseUp}
+              onDoubleClick={() => {
+                if (!studioMode && selectedSourceObj) {
+                  onOpenSourceProperties(selectedSourceObj, activeScene.id);
+                }
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                if (!studioMode && selectedSourceObj) {
+                  onOpenSourceProperties(selectedSourceObj, activeScene.id);
+                }
+              }}
+              className={`absolute inset-0 w-full h-full block ${
+                wbTool !== "select"
+                  ? "cursor-crosshair"
+                  : studioMode
+                  ? "cursor-default"
+                  : "cursor-move"
               }`}
-            >
-              {/* CLEAN RECORDABLE PROGRAM CANVAS */}
-              <canvas
-                ref={pgmCanvasRef}
-                width={stageW}
-                height={stageH}
-                onMouseDown={(e) => {
-                  if (!studioMode || wbTool !== "select") {
-                    handleCanvasMouseDown(e, activeScene);
-                  }
-                }}
-                onMouseMove={(e) => {
-                  if (!studioMode || wbTool !== "select") {
-                    handleCanvasMouseMove(e, activeScene);
-                  }
-                }}
-                onMouseUp={handleCanvasMouseUp}
-                onMouseLeave={handleCanvasMouseUp}
-                onDoubleClick={() => {
-                  if (!studioMode && selectedSourceObj) {
-                    onOpenSourceProperties(selectedSourceObj, activeScene.id);
-                  }
-                }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  if (!studioMode && selectedSourceObj) {
-                    onOpenSourceProperties(selectedSourceObj, activeScene.id);
-                  }
-                }}
-                className={`${
-                  isPortraitCanvas ? "h-full w-auto" : "w-full h-auto max-h-full"
-                } object-contain rounded ${
-                  wbTool !== "select"
-                    ? "cursor-crosshair"
-                    : studioMode
-                    ? "cursor-default"
-                    : "cursor-move"
-                }`}
-              />
+            />
 
-              {/* TRANSPARENT UI GIZMO OVERLAY CANVAS (Never recorded into video files!) */}
-              <canvas
-                ref={pgmGizmoCanvasRef}
-                width={stageW}
-                height={stageH}
-                className="pointer-events-none absolute inset-0 w-full h-full object-contain rounded"
-              />
-            </div>
+            {/* TRANSPARENT UI GIZMO OVERLAY CANVAS (Identical pixel box, never recorded) */}
+            <canvas
+              ref={pgmGizmoCanvasRef}
+              width={stageW}
+              height={stageH}
+              className="pointer-events-none absolute inset-0 w-full h-full block"
+            />
 
             {/* Subtle Corner Hints */}
             {!studioMode && (
-              <div className="pointer-events-none absolute bottom-2.5 right-3 flex items-center gap-2 bg-slate-950/80 backdrop-blur px-2.5 py-1 rounded border border-slate-800/80 text-[10px] text-slate-400">
+              <div className="pointer-events-none absolute bottom-2 right-2.5 flex items-center gap-2 bg-slate-950/85 backdrop-blur px-2.5 py-1 rounded border border-slate-800/80 text-[10px] text-slate-400">
                 <span>Clic + Arrastrar: Mover/Estirar</span>
                 <span>•</span>
                 <span className="text-emerald-400 font-medium">
@@ -1836,4 +1909,4 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
       </div>
     </div>
   );
-};
+});

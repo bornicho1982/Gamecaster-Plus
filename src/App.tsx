@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   AudioBusChannel,
@@ -246,11 +246,7 @@ export const App: React.FC = () => {
     },
   ]);
 
-  // Capture Frames & Open Windows State
-  const [desktopFrame, setDesktopFrame] = useState<string | null>(null);
-  const [windowFramesMap, setWindowFramesMap] = useState<
-    Record<number, string>
-  >({});
+  // Open Windows State
   const [openWindows, setOpenWindows] = useState<WindowInfo[]>([]);
   const [foregroundWindow, setForegroundWindow] = useState<WindowInfo | null>(
     null
@@ -299,6 +295,11 @@ export const App: React.FC = () => {
       tracks: [true, false, true, false, false, false],
     },
   ]);
+  const audioBusesRef = useRef<AudioBusChannel[]>(audioBuses);
+  useEffect(() => {
+    audioBusesRef.current = audioBuses;
+  }, [audioBuses]);
+
   const [vuLevels, setVuLevels] = useState<{ system: number; mic: number }>({
     system: 18,
     mic: 12,
@@ -455,69 +456,6 @@ export const App: React.FC = () => {
     [activeSceneId, transitionRules, scenes, perSceneAudioEnabled]
   );
 
-  // Golden Rule #4: Sequential async loop for desktop & window capture (Zero CPU spike)
-  useEffect(() => {
-    let cancelled = false;
-    let timerId: ReturnType<typeof setTimeout>;
-
-    const pollCapture = async () => {
-      if (cancelled) return;
-      try {
-        const allSources = [
-          ...activeScene.sources,
-          ...(studioMode ? previewScene.sources : []),
-        ];
-        const screenSrc = allSources.find(
-          (s) => s.type === "screen" && s.layout.visible
-        );
-        const showDesktopCursor = screenSrc ? screenSrc.showCursor !== false : true;
-        const monitorIndex = screenSrc?.monitorIndex ?? 0;
-
-        const frame = await invoke<string>("capture_live_frame", {
-          width: 960,
-          height: 540,
-          showCursor: showDesktopCursor,
-          monitorIndex,
-        });
-        if (!cancelled && frame.startsWith("data:image/jpeg;base64,")) {
-          setDesktopFrame(frame);
-        }
-
-        const winSources = allSources.filter(
-          (s) => s.type === "window" && s.layout.visible && s.windowHwnd
-        );
-        for (const ws of winSources) {
-          if (ws.windowHwnd) {
-            const wFrame = await invoke<string>("capture_window_frame", {
-              hwnd: ws.windowHwnd,
-              width: 960,
-              height: 540,
-              showCursor: ws.showCursor !== false,
-              fallbackTitle: ws.windowTitle || null,
-            });
-            if (!cancelled && wFrame.startsWith("data:image/jpeg;base64,")) {
-              setWindowFramesMap((prev) => ({
-                ...prev,
-                [ws.windowHwnd!]: wFrame,
-              }));
-            }
-          }
-        }
-      } catch {
-        // Fallback when not in Tauri
-      }
-      if (!cancelled) {
-        timerId = setTimeout(pollCapture, 45);
-      }
-    };
-
-    pollCapture();
-    return () => {
-      cancelled = true;
-      clearTimeout(timerId);
-    };
-  }, [activeScene, previewScene, studioMode]);
-
   // Sequential Hardware Telemetry & Auto Scene Switcher Loop
   useEffect(() => {
     let cancelled = false;
@@ -650,22 +588,29 @@ export const App: React.FC = () => {
         micVal = Math.min(100, Math.round(avg * 1.65));
       }
       setVuLevels((prev) => {
-        const sysBus = audioBuses.find((b) => b.kind === "system");
-        const micBus = audioBuses.find((b) => b.kind === "mic");
+        const sysBus = audioBusesRef.current.find((b) => b.kind === "system");
+        const micBus = audioBusesRef.current.find((b) => b.kind === "mic");
         const sysTarget = sysBus?.muted
           ? 0
           : Math.round(
               ((sysBus?.volume || 80) * (0.45 + Math.random() * 0.25))
             );
+        const nextSys = Math.round(prev.system * 0.4 + sysTarget * 0.6);
         const finalMic = micBus?.muted
           ? 0
           : Math.round((micVal * (micBus?.volume || 90)) / 100);
+        if (
+          Math.abs(prev.system - nextSys) < 2 &&
+          Math.abs(prev.mic - finalMic) < 2
+        ) {
+          return prev;
+        }
         return {
-          system: Math.round(prev.system * 0.4 + sysTarget * 0.6),
+          system: nextSys,
           mic: finalMic,
         };
       });
-    }, 110);
+    }, 180);
 
     return () => {
       clearInterval(timerId);
@@ -956,11 +901,7 @@ export const App: React.FC = () => {
       const replayPath = await invoke<string>("trigger_instant_replay", {
         durationSec: 30,
       });
-      const bytes = await invoke<number[]>("read_media_file_bytes", {
-        path: replayPath,
-      });
-      const blob = new Blob([new Uint8Array(bytes)], { type: "video/mp4" });
-      const blobUrl = URL.createObjectURL(blob);
+      const mediaUrl = convertFileSrc(replayPath);
 
       const existingReplay = activeScene.sources.find(
         (s) => s.type === "replay"
@@ -968,14 +909,14 @@ export const App: React.FC = () => {
       if (existingReplay) {
         handleUpdateSource(activeScene.id, {
           ...existingReplay,
-          mediaUrl: blobUrl,
+          mediaUrl,
           layout: { ...existingReplay.layout, visible: true },
         });
       } else {
         handleAddSourceToEditableScene(
           "replay",
           "Repetición Instantánea (En Vivo)",
-          { mediaUrl: blobUrl, mediaLoop: true }
+          { mediaUrl, mediaLoop: true }
         );
       }
       showToast(`✅ Repetición Instantánea guardada: ${replayPath}`);
@@ -1605,8 +1546,6 @@ export const App: React.FC = () => {
         activeTransition={activeTransition}
         transitionDurationMs={transitionDurationMs}
         transitionTriggerCount={transitionTriggerCount}
-        desktopFrameDataUrl={desktopFrame}
-        windowFramesMap={windowFramesMap}
         pgmCanvasRef={pgmCanvasRef}
       />
 
@@ -1722,6 +1661,8 @@ export const App: React.FC = () => {
             <strong className="text-[#00F0FF]">
               {globalSettings.videoEncoder === "h264_nvenc"
                 ? "NVIDIA NVENC H.264"
+                : globalSettings.videoEncoder === "h264_mf"
+                ? "Windows MediaFoundation H.264"
                 : "x264 (CPU)"}
             </strong>
           </span>

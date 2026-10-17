@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import {
   AutoSceneRule,
   MediaFileEntry,
@@ -145,10 +145,10 @@ export const StudioModals: React.FC<StudioModalsProps> = ({
     }
   }, [activeModal]);
 
-  // Cleanup Blob URL
+  // Cleanup Blob URL if needed
   useEffect(() => {
     return () => {
-      if (previewBlobUrl) {
+      if (previewBlobUrl && previewBlobUrl.startsWith("blob:")) {
         URL.revokeObjectURL(previewBlobUrl);
       }
     };
@@ -200,22 +200,14 @@ export const StudioModals: React.FC<StudioModalsProps> = ({
     setSelectedMedia(entry);
     setLoadingMedia(true);
     setEditorStatus(null);
-    if (previewBlobUrl) {
+    if (previewBlobUrl && previewBlobUrl.startsWith("blob:")) {
       URL.revokeObjectURL(previewBlobUrl);
-      setPreviewBlobUrl(null);
     }
     try {
-      const bytes = await invoke<number[]>("read_media_file_bytes", {
-        path: entry.path,
-      });
-      const uint8 = new Uint8Array(bytes);
-      const mime =
-        entry.kind === "screenshot" ? "image/png" : "video/mp4";
-      const blob = new Blob([uint8], { type: mime });
-      const url = URL.createObjectURL(blob);
-      setPreviewBlobUrl(url);
+      const assetUrl = convertFileSrc(entry.path);
+      setPreviewBlobUrl(assetUrl);
     } catch (e) {
-      setEditorStatus(`Error al leer archivo: ${String(e)}`);
+      setEditorStatus(`Error al abrir archivo: ${String(e)}`);
     } finally {
       setLoadingMedia(false);
     }
