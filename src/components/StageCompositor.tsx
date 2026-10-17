@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   StageSource,
+  SourceType,
   Scene,
   TransitionId,
   WhiteboardTool,
@@ -34,6 +35,7 @@ import {
   ArrowUp,
   ArrowDown,
   RotateCcw,
+  UploadCloud,
 } from "lucide-react";
 
 interface StageCompositorProps {
@@ -46,6 +48,11 @@ interface StageCompositorProps {
   selectedSourceId: string | null;
   onSelectSource: (id: string | null) => void;
   onUpdateSource: (sceneId: string, updated: StageSource) => void;
+  onAddDroppedSource?: (
+    type: SourceType,
+    name: string,
+    extra?: Partial<StageSource>
+  ) => void;
   onDeleteSource?: (sourceId: string) => void;
   onOpenSourceProperties: (source: StageSource, sceneId: string) => void;
   onPushLive: () => void;
@@ -79,6 +86,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = React.memo(({
   selectedSourceId,
   onSelectSource,
   onUpdateSource,
+  onAddDroppedSource,
   onDeleteSource,
   onOpenSourceProperties,
   onPushLive,
@@ -1713,13 +1721,60 @@ export const StageCompositor: React.FC<StageCompositorProps> = React.memo(({
     });
   };
 
+  const [isStageFileDragOver, setIsStageFileDragOver] = useState<boolean>(false);
+
+  const handleStageDropFiles = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsStageFileDragOver(false);
+    if (!onAddDroppedSource) return;
+
+    const files = Array.from(e.dataTransfer.files || []);
+    for (const file of files) {
+      const url = URL.createObjectURL(file);
+      const mime = (file.type || "").toLowerCase();
+      const ext = file.name.split(".").pop()?.toLowerCase() || "";
+      if (
+        mime.startsWith("image/") ||
+        ["png", "jpg", "jpeg", "webp", "gif", "svg", "bmp"].includes(ext)
+      ) {
+        onAddDroppedSource("image", `Imagen: ${file.name}`, {
+          mediaUrl: url,
+        });
+      } else if (
+        mime.startsWith("video/") ||
+        mime.startsWith("audio/") ||
+        ["mp4", "mkv", "webm", "mov", "avi", "mp3", "wav", "ogg"].includes(ext)
+      ) {
+        onAddDroppedSource("media", `Multimedia: ${file.name}`, {
+          mediaUrl: url,
+          mediaLoop: true,
+        });
+      }
+    }
+  };
+
   return (
     <div
       className="relative flex-1 flex flex-col bg-[#05070B] border-b border-slate-800/80 overflow-hidden select-none"
       onClick={() => {
         if (contextMenu) setContextMenu(null);
       }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        if (!isStageFileDragOver) setIsStageFileDragOver(true);
+      }}
+      onDragLeave={() => setIsStageFileDragOver(false)}
+      onDrop={handleStageDropFiles}
     >
+      {isStageFileDragOver && (
+        <div className="pointer-events-none absolute inset-0 z-50 bg-[#050811]/85 backdrop-blur-sm flex flex-col items-center justify-center gap-2 border-2 border-dashed border-[#00F0FF] m-3 rounded-xl">
+          <UploadCloud className="w-10 h-10 text-[#00F0FF] animate-bounce" />
+          <span className="text-sm font-bold text-[#00F0FF]">
+            Suelta aquí tu Imagen o Vídeo para añadirlo al Lienzo
+          </span>
+        </div>
+      )}
       {/* Stage Sub-Header: Quick Capture Selector (Module 1) + Quick Transform & Zoom (Module 2) */}
       <div className="h-9 px-3 bg-[#0B0E17] border-b border-slate-800/80 flex items-center justify-between text-xs shrink-0 gap-2 overflow-x-auto">
         <div className="flex items-center gap-1.5 shrink-0">

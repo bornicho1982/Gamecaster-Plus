@@ -308,6 +308,7 @@ export const App: React.FC = () => {
   // Unified Recording & Streaming State
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [isRecordingPaused, setIsRecordingPaused] = useState<boolean>(false);
+  const [recordedBytes, setRecordedBytes] = useState<number>(0);
   const [activeRecordingEngine, setActiveRecordingEngine] = useState<
     "composed_canvas" | "native_desktop" | null
   >(null);
@@ -797,6 +798,7 @@ export const App: React.FC = () => {
             audioBitsPerSecond: 192000,
           });
 
+          setRecordedBytes(0);
           recorder.ondataavailable = (ev) => {
             if (ev.data && ev.data.size > 0 && activeTempFileRef.current) {
               const targetFile = activeTempFileRef.current;
@@ -805,10 +807,13 @@ export const App: React.FC = () => {
                 .then(async () => {
                   const buf = await blobChunk.arrayBuffer();
                   const b64 = arrayBufferToBase64(buf);
-                  await invoke("append_canvas_chunk", {
+                  const totalBytes = await invoke<number>("append_canvas_chunk", {
                     tempPath: targetFile,
                     base64Chunk: b64,
                   });
+                  if (typeof totalBytes === "number") {
+                    setRecordedBytes(totalBytes);
+                  }
                 })
                 .catch(() => {});
             }
@@ -833,6 +838,7 @@ export const App: React.FC = () => {
                   format: globalSettings.recordingFormat || "mp4",
                 }
               );
+              setRecordedBytes(0);
               showToast(`✅ Grabación con Audio guardada en disco: ${finalVideo}`);
             } catch (err) {
               showToast(`Error al finalizar grabación: ${String(err)}`);
@@ -858,6 +864,7 @@ export const App: React.FC = () => {
           const savedPath = await invoke<string>("stop_recording");
           setIsRecording(false);
           setIsRecordingPaused(false);
+          setRecordedBytes(0);
           setActiveRecordingEngine(null);
           showToast(`✅ Grabación finalizada y guardada: ${savedPath}`);
         } catch (e) {
@@ -1446,7 +1453,11 @@ export const App: React.FC = () => {
               />
               <span>
                 {isRecording
-                  ? `Detener (${formatTimer(sessionSeconds)})`
+                  ? `Detener (${formatTimer(sessionSeconds)}${
+                      recordedBytes > 0
+                        ? ` • ${(recordedBytes / 1048576).toFixed(1)} MB`
+                        : ""
+                    })`
                   : "Grabar"}
               </span>
             </button>
@@ -1542,6 +1553,7 @@ export const App: React.FC = () => {
         selectedSourceId={selectedSourceId}
         onSelectSource={setSelectedSourceId}
         onUpdateSource={handleUpdateSource}
+        onAddDroppedSource={handleAddSourceToEditableScene}
         onDeleteSource={(sourceId) =>
           setScenes((prev) =>
             prev.map((sc) =>
@@ -1667,7 +1679,11 @@ export const App: React.FC = () => {
             />
             <strong className="text-slate-200">
               {isRecording
-                ? `GRABANDO (${formatTimer(sessionSeconds)})`
+                ? `GRABANDO (${formatTimer(sessionSeconds)}${
+                    recordedBytes > 0
+                      ? ` • ${(recordedBytes / 1048576).toFixed(1)} MB`
+                      : ""
+                  })`
                 : isStreaming
                 ? `EN DIRECTO (${formatTimer(sessionSeconds)})`
                 : "MOTOR LISTO"}

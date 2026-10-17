@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Scene,
   SourceType,
@@ -17,6 +17,9 @@ import {
   Settings,
   Trash2,
   Copy,
+  Edit3,
+  Check,
+  UploadCloud,
 } from "lucide-react";
 
 interface SourcesPanelProps {
@@ -67,6 +70,30 @@ export const SourcesPanel: React.FC<SourcesPanelProps> = ({
   onRefreshWindows,
 }) => {
   const [showAddMenu, setShowAddMenu] = useState<boolean>(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState<string>("");
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
+  const [webcamDevices, setWebcamDevices] = useState<
+    { deviceId: string; label: string }[]
+  >([]);
+
+  // Enumerate connected webcams / UVC capture cards when opening the Add Source menu
+  useEffect(() => {
+    if (!showAddMenu) return;
+    onRefreshWindows();
+    navigator.mediaDevices
+      ?.enumerateDevices()
+      .then((devices) => {
+        const cams = devices
+          .filter((d) => d.kind === "videoinput")
+          .map((d, idx) => ({
+            deviceId: d.deviceId || "default_cam",
+            label: d.label || `Cámara Web / Capturadora #${idx + 1}`,
+          }));
+        setWebcamDevices(cams);
+      })
+      .catch(() => {});
+  }, [showAddMenu, onRefreshWindows]);
 
   const sortedSources = [...editableScene.sources].sort(
     (a, b) => b.zOrder - a.zOrder
@@ -74,8 +101,73 @@ export const SourcesPanel: React.FC<SourcesPanelProps> = ({
   const selectedSource =
     editableScene.sources.find((s) => s.id === selectedSourceId) || null;
 
+  const commitRename = (src: StageSource) => {
+    const trimmed = editingName.trim();
+    if (trimmed) {
+      onUpdateSource(editableScene.id, {
+        ...src,
+        name: trimmed,
+      });
+    }
+    setEditingId(null);
+  };
+
+  // Drag & Drop files from Windows Explorer directly onto the Sources Panel
+  const handleDropFiles = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+
+    const files = Array.from(e.dataTransfer.files || []);
+    for (const file of files) {
+      const url = URL.createObjectURL(file);
+      const mime = (file.type || "").toLowerCase();
+      const ext = file.name.split(".").pop()?.toLowerCase() || "";
+      if (
+        mime.startsWith("image/") ||
+        ["png", "jpg", "jpeg", "webp", "gif", "svg", "bmp"].includes(ext)
+      ) {
+        onAddSource("image", `Imagen: ${file.name}`, {
+          mediaUrl: url,
+        });
+      } else if (
+        mime.startsWith("video/") ||
+        mime.startsWith("audio/") ||
+        ["mp4", "mkv", "webm", "mov", "avi", "mp3", "wav", "ogg"].includes(ext)
+      ) {
+        onAddSource("media", `Multimedia: ${file.name}`, {
+          mediaUrl: url,
+          mediaLoop: true,
+        });
+      }
+    }
+  };
+
   return (
-    <div className="col-span-4 flex flex-col h-full overflow-hidden bg-[#0B0E17]">
+    <div
+      className={`col-span-4 flex flex-col h-full overflow-hidden bg-[#0B0E17] relative transition ${
+        isDragOver ? "ring-2 ring-inset ring-[#00F0FF] bg-[#00F0FF]/5" : ""
+      }`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        if (!isDragOver) setIsDragOver(true);
+      }}
+      onDragLeave={() => setIsDragOver(false)}
+      onDrop={handleDropFiles}
+    >
+      {/* Drag & Drop Overlay Indicator */}
+      {isDragOver && (
+        <div className="pointer-events-none absolute inset-0 z-40 bg-[#070B14]/90 backdrop-blur-sm flex flex-col items-center justify-center gap-2 border-2 border-dashed border-[#00F0FF] rounded-lg m-1">
+          <UploadCloud className="w-7 h-7 text-[#00F0FF] animate-bounce" />
+          <span className="text-xs font-bold text-[#00F0FF]">
+            Suelta aquí tus Imágenes o Vídeos de Windows
+          </span>
+          <span className="text-[10px] text-slate-300">
+            Se añadirán automáticamente como capas a "{editableScene.name}"
+          </span>
+        </div>
+      )}
+
       {/* Column Header */}
       <div className="px-3 py-2 bg-[#101522] border-b border-slate-800 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2 min-w-0">
@@ -95,40 +187,95 @@ export const SourcesPanel: React.FC<SourcesPanelProps> = ({
           <div className="h-full flex flex-col items-center justify-center text-slate-500 p-4 text-center">
             <span>Esta escena no tiene fuentes todavía.</span>
             <span className="text-[11px] text-slate-400 mt-1">
-              Usa el botón <strong>+ Añadir Fuente</strong> de abajo.
+              Usa <strong>+ Añadir Fuente</strong> o arrastra imágenes/vídeos aquí.
             </span>
           </div>
         ) : (
           sortedSources.map((src) => {
             const isSel = src.id === selectedSourceId;
+            const hasCrop =
+              src.layout.cropTop > 0 ||
+              src.layout.cropBottom > 0 ||
+              src.layout.cropLeft > 0 ||
+              src.layout.cropRight > 0;
+
             return (
               <div
                 key={src.id}
                 onClick={() => onSelectSource(src.id)}
                 onDoubleClick={() => onOpenProperties(src, editableScene.id)}
-                className={`px-3 py-2 flex items-center justify-between cursor-pointer transition ${
+                className={`px-3 py-1.5 flex items-center justify-between cursor-pointer transition ${
                   isSel
                     ? "bg-[#00F0FF]/15 text-white border-l-2 border-l-[#00F0FF]"
                     : "hover:bg-slate-900/70 text-slate-300"
                 }`}
               >
-                <div className="flex items-center gap-2 min-w-0">
+                <div className="flex items-center gap-2 min-w-0 flex-1 mr-2">
                   <span className="text-sm shrink-0" title={src.type}>
                     {SOURCE_TYPE_ICON[src.type] || "📦"}
                   </span>
-                  <span className="truncate font-medium">{src.name}</span>
+
+                  {editingId === src.id ? (
+                    <div
+                      className="flex items-center gap-1 flex-1"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="text"
+                        value={editingName}
+                        onChange={(e) => setEditingName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitRename(src);
+                          if (e.key === "Escape") setEditingId(null);
+                        }}
+                        autoFocus
+                        className="w-full bg-slate-950 border border-[#00F0FF] rounded px-1.5 py-0.5 text-xs text-white outline-none"
+                      />
+                      <button
+                        onClick={() => commitRename(src)}
+                        className="p-0.5 text-emerald-400 hover:text-emerald-300"
+                        title="Guardar nombre"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="truncate font-medium">{src.name}</span>
+                  )}
+
+                  {hasCrop && (
+                    <span className="px-1 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-mono uppercase shrink-0">
+                      CROP
+                    </span>
+                  )}
+                  {src.colorKey.chromaKey.enabled && (
+                    <span className="px-1 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-mono uppercase shrink-0">
+                      CHROMA
+                    </span>
+                  )}
                   {src.effects.shader !== "none" && (
-                    <span className="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 text-[9px] font-mono uppercase shrink-0">
+                    <span className="px-1 py-0.5 rounded bg-purple-500/20 text-purple-300 text-[9px] font-mono uppercase shrink-0">
                       {src.effects.shader}
                     </span>
                   )}
                 </div>
 
-                {/* Quick Visibility & Lock Toggles */}
+                {/* Quick Rename, Visibility & Lock Toggles */}
                 <div
-                  className="flex items-center gap-1 shrink-0"
+                  className="flex items-center gap-0.5 shrink-0"
                   onClick={(e) => e.stopPropagation()}
                 >
+                  <button
+                    onClick={() => {
+                      setEditingId(src.id);
+                      setEditingName(src.name);
+                    }}
+                    className="p-1 rounded text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition"
+                    title="Renombrar capa"
+                  >
+                    <Edit3 className="w-3 h-3" />
+                  </button>
+
                   <button
                     onClick={() =>
                       onUpdateSource(editableScene.id, {
@@ -191,7 +338,7 @@ export const SourcesPanel: React.FC<SourcesPanelProps> = ({
         )}
       </div>
 
-      {/* Fixed Bottom Action Toolbar: + Añadir Fuente, ⚙️ Propiedades, 🔼 Subir, 🔽 Bajar, 🗑️ Eliminar */}
+      {/* Fixed Bottom Action Toolbar: + Añadir Fuente, ⚙️ Propiedades, 🔼 Subir, 🔽 Bajar, 📋 Duplicar, 🗑️ Eliminar */}
       <div className="px-2.5 py-2 bg-[#101522] border-t border-slate-800 flex items-center justify-between gap-1.5 shrink-0 relative">
         <div className="relative">
           <button
@@ -203,84 +350,148 @@ export const SourcesPanel: React.FC<SourcesPanelProps> = ({
           </button>
 
           {showAddMenu && (
-            <div className="absolute left-0 bottom-full mb-2 w-64 rounded-xl bg-[#101522] border border-slate-700 shadow-2xl py-1.5 z-50">
-              {[
-                {
-                  label: "🖥️ Captura de Pantalla / Monitor",
-                  action: () => {
-                    setShowAddMenu(false);
-                    onAddSource("screen", "Captura de Monitor Principal");
-                  },
-                },
-                {
-                  label: "🎮 Captura de Juego / Ventana...",
-                  action: () => {
-                    setShowAddMenu(false);
-                    onRefreshWindows();
-                    onAddSource("window", "Captura de Juego / Ventana", {
-                      windowHwnd: openWindows[0]?.hwnd || 0,
-                      windowTitle: openWindows[0]?.title || "Ventana de Juego",
-                    });
-                  },
-                },
-                {
-                  label: "📷 Cámara Web / Capturadora UVC",
-                  action: () => {
-                    setShowAddMenu(false);
-                    onAddSource("camera", "Cámara Web PIP");
-                  },
-                },
-                {
-                  label: "📺 Tercio Inferior Animado (Lower Third)",
-                  action: () => {
-                    setShowAddMenu(false);
-                    onAddSource("lower_third", "Tercio Inferior Broadcast");
-                  },
-                },
-                {
-                  label: "🔤 Texto / Rótulo Personalizado",
-                  action: () => {
-                    setShowAddMenu(false);
-                    onAddSource("text", "Rótulo en Directo");
-                  },
-                },
-                {
-                  label: "🖼️ Imagen / Marca de Agua (Disco)...",
-                  action: () => {
-                    setShowAddMenu(false);
-                    onPickImageFile();
-                  },
-                },
-                {
-                  label: "🎬 Vídeo / Archivo Multimedia (Disco)...",
-                  action: () => {
-                    setShowAddMenu(false);
-                    onPickMediaFile();
-                  },
-                },
-                {
-                  label: "🎨 Fondo de Color / Degradado",
-                  action: () => {
-                    setShowAddMenu(false);
-                    onAddSource("color", "Fondo Degradado");
-                  },
-                },
-                {
-                  label: "⏪ Fuente de Repetición Instantánea",
-                  action: () => {
-                    setShowAddMenu(false);
-                    onTriggerInstantReplay();
-                  },
-                },
-              ].map((item, idx) => (
+            <div className="absolute left-0 bottom-full mb-2 w-72 max-h-[340px] overflow-y-auto rounded-xl bg-[#101522] border border-slate-700 shadow-2xl py-1.5 z-50">
+              <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-slate-400">
+                Capturas de Pantalla y Juegos
+              </div>
+              <button
+                onClick={() => {
+                  setShowAddMenu(false);
+                  onAddSource("screen", "Captura de Monitor Principal");
+                }}
+                className="w-full px-3.5 py-1.5 text-left text-xs text-slate-200 hover:bg-[#00F0FF]/15 hover:text-[#00F0FF] transition"
+              >
+                🖥️ Captura de Pantalla / Monitor
+              </button>
+
+              <button
+                onClick={() => {
+                  setShowAddMenu(false);
+                  onRefreshWindows();
+                  onAddSource("window", "Captura de Juego / Ventana", {
+                    windowHwnd: openWindows[0]?.hwnd || 0,
+                    windowTitle: openWindows[0]?.title || "Ventana de Juego",
+                  });
+                }}
+                className="w-full px-3.5 py-1.5 text-left text-xs text-slate-200 hover:bg-[#00F0FF]/15 hover:text-[#00F0FF] transition"
+              >
+                🎮 Captura de Juego / Ventana...
+              </button>
+
+              {/* Direct detected open windows quick-add */}
+              {openWindows.slice(0, 3).map((win) => (
                 <button
-                  key={idx}
-                  onClick={item.action}
-                  className="w-full px-3.5 py-2 text-left text-xs text-slate-200 hover:bg-[#00F0FF]/15 hover:text-[#00F0FF] transition"
+                  key={win.hwnd}
+                  onClick={() => {
+                    setShowAddMenu(false);
+                    onAddSource("window", `Ventana: ${win.title.slice(0, 24)}`, {
+                      windowHwnd: win.hwnd,
+                      windowTitle: win.title,
+                    });
+                  }}
+                  className="w-full pl-6 pr-3.5 py-1 text-left text-[11px] text-slate-400 hover:bg-[#00F0FF]/15 hover:text-[#00F0FF] truncate transition"
+                  title={`Añadir directamente: ${win.title}`}
                 >
-                  {item.label}
+                  ↳ 🎮 {win.title}
                 </button>
               ))}
+
+              <div className="my-1 border-t border-slate-800" />
+              <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-slate-400">
+                Cámaras y Multimedia
+              </div>
+
+              {webcamDevices.length > 0 ? (
+                webcamDevices.map((cam) => (
+                  <button
+                    key={cam.deviceId}
+                    onClick={() => {
+                      setShowAddMenu(false);
+                      onAddSource("camera", `Cámara: ${cam.label.slice(0, 26)}`, {
+                        cameraDeviceId: cam.deviceId,
+                      });
+                    }}
+                    className="w-full px-3.5 py-1.5 text-left text-xs text-slate-200 hover:bg-[#00F0FF]/15 hover:text-[#00F0FF] truncate transition"
+                  >
+                    📷 {cam.label}
+                  </button>
+                ))
+              ) : (
+                <button
+                  onClick={() => {
+                    setShowAddMenu(false);
+                    onAddSource("camera", "Cámara Web PIP");
+                  }}
+                  className="w-full px-3.5 py-1.5 text-left text-xs text-slate-200 hover:bg-[#00F0FF]/15 hover:text-[#00F0FF] transition"
+                >
+                  📷 Cámara Web / Capturadora UVC
+                </button>
+              )}
+
+              <button
+                onClick={() => {
+                  setShowAddMenu(false);
+                  onPickImageFile();
+                }}
+                className="w-full px-3.5 py-1.5 text-left text-xs text-slate-200 hover:bg-[#00F0FF]/15 hover:text-[#00F0FF] transition"
+              >
+                🖼️ Imagen / Marca de Agua (Disco)...
+              </button>
+
+              <button
+                onClick={() => {
+                  setShowAddMenu(false);
+                  onPickMediaFile();
+                }}
+                className="w-full px-3.5 py-1.5 text-left text-xs text-slate-200 hover:bg-[#00F0FF]/15 hover:text-[#00F0FF] transition"
+              >
+                🎬 Vídeo / Archivo Multimedia (Disco)...
+              </button>
+
+              <div className="my-1 border-t border-slate-800" />
+              <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-slate-400">
+                Gráficos Broadcast y Efectos
+              </div>
+
+              <button
+                onClick={() => {
+                  setShowAddMenu(false);
+                  onAddSource("lower_third", "Tercio Inferior Broadcast");
+                }}
+                className="w-full px-3.5 py-1.5 text-left text-xs text-slate-200 hover:bg-[#00F0FF]/15 hover:text-[#00F0FF] transition"
+              >
+                📺 Tercio Inferior Animado (Lower Third)
+              </button>
+
+              <button
+                onClick={() => {
+                  setShowAddMenu(false);
+                  onAddSource("text", "Rótulo en Directo");
+                }}
+                className="w-full px-3.5 py-1.5 text-left text-xs text-slate-200 hover:bg-[#00F0FF]/15 hover:text-[#00F0FF] transition"
+              >
+                🔤 Texto / Rótulo Personalizado
+              </button>
+
+              <button
+                onClick={() => {
+                  setShowAddMenu(false);
+                  onAddSource("color", "Fondo Degradado");
+                }}
+                className="w-full px-3.5 py-1.5 text-left text-xs text-slate-200 hover:bg-[#00F0FF]/15 hover:text-[#00F0FF] transition"
+              >
+                🎨 Fondo de Color / Degradado
+              </button>
+
+              <button
+                onClick={() => {
+                  setShowAddMenu(false);
+                  onTriggerInstantReplay();
+                }}
+                className="w-full px-3.5 py-1.5 text-left text-xs text-slate-200 hover:bg-[#00F0FF]/15 hover:text-[#00F0FF] transition"
+              >
+                ⏪ Fuente de Repetición Instantánea
+              </button>
             </div>
           )}
         </div>

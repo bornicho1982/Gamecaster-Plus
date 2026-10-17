@@ -563,6 +563,9 @@ pub fn finalize_canvas_recording_file(
     };
 
     let mut ok = run_transcode(preferred);
+    if !ok && preferred == "h264_nvenc" {
+        ok = run_transcode("h264_mf");
+    }
     if !ok && preferred != "libx264" {
         ok = run_transcode("libx264");
     }
