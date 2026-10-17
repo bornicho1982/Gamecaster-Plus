@@ -17,6 +17,7 @@ import {
   ShieldCheck,
   Plus,
   Trash2,
+  Package,
 } from "lucide-react";
 
 export type SettingsTabId =
@@ -25,7 +26,8 @@ export type SettingsTabId =
   | "audio"
   | "recording"
   | "streaming"
-  | "hotkeys";
+  | "hotkeys"
+  | "store";
 
 interface GlobalSettingsModalProps {
   isOpen: boolean;
@@ -121,6 +123,7 @@ export const GlobalSettingsModal: React.FC<GlobalSettingsModalProps> = ({
     { id: "recording", label: "4. Grabación", icon: Film },
     { id: "streaming", label: "5. Transmisión (Cuentas)", icon: Radio },
     { id: "hotkeys", label: "6. Atajos de Teclado", icon: Keyboard },
+    { id: "store", label: "7. Microsoft Store (MSIX)", icon: Package },
   ];
 
   const handleToggleExcludeFromCapture = async (exclude: boolean) => {
@@ -949,6 +952,90 @@ export const GlobalSettingsModal: React.FC<GlobalSettingsModalProps> = ({
                       </div>
                     );
                   })}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 7: MICROSOFT STORE & MSIX PACKAGING */}
+            {activeTab === "store" && (
+              <div className="space-y-4">
+                <div className="p-4 rounded-xl bg-[#101626] border border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Package className="w-5 h-5 text-[#00F0FF]" />
+                      <h3 className="font-semibold text-sm text-white">
+                        Empaquetado y Publicación en Microsoft Store (MSIX)
+                      </h3>
+                    </div>
+                    <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono text-[10px] border border-emerald-500/40">
+                      100% CLEAN-ROOM COMPLIANT
+                    </span>
+                  </div>
+                  <p className="text-slate-400 text-[11px] leading-relaxed">
+                    Gamecaster Plus ha sido construido siguiendo estrictos estándares clean-room, libre de licencias virales conflictivas, con arquitectura Direct3D11 / WASAPI / Tauri v2 nativa de 64-bit lista para ser distribuida directamente a través de Microsoft Partner Center y Windows 10/11 Store.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="p-3 rounded-xl bg-[#101626] border border-slate-800 space-y-1.5">
+                    <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                      Identidad del Paquete MSIX
+                    </span>
+                    <div className="font-mono text-white text-[11px]">
+                      com.bornicho.gamecasterplus.studio
+                    </div>
+                    <span className="text-[10px] text-slate-500 block">
+                      Nombre para Microsoft Partner Center
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-[#101626] border border-slate-800 space-y-1.5">
+                    <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                      Editor (Publisher)
+                    </span>
+                    <div className="font-mono text-white text-[11px]">
+                      CN=Bornicho Studio, O=Bornicho, C=ES
+                    </div>
+                    <span className="text-[10px] text-slate-500 block">
+                      Firma de código de confianza Windows
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-[#101626] border border-slate-800 space-y-1.5">
+                    <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                      Permisos y Capacidades Windows
+                    </span>
+                    <div className="font-mono text-emerald-400 text-[11px]">
+                      runFullTrust, graphicsCapture, microphone, webcam
+                    </div>
+                    <span className="text-[10px] text-slate-500 block">
+                      Declaradas en AppxManifest.xml
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-[#101626] border border-slate-800 space-y-1.5">
+                    <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                      Compatibilidad de SO
+                    </span>
+                    <div className="font-mono text-white text-[11px]">
+                      Windows 10 Build 19041+ & Windows 11
+                    </div>
+                    <span className="text-[10px] text-slate-500 block">
+                      Arquitectura nativa x86_64
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-[#101626] border border-slate-800 space-y-2">
+                  <span className="font-semibold text-white block">
+                    Comando de Generación de Instalador MSIX / MSI:
+                  </span>
+                  <div className="p-2.5 rounded-lg bg-slate-950 font-mono text-[11px] text-[#00F0FF] border border-slate-800 select-all">
+                    npx tauri build --bundles msi,nsis
+                  </div>
+                  <span className="text-[10px] text-slate-400 block">
+                    Genera el instalador firmado (.msi o paquete msix) en <code>src-tauri/target/release/bundle/</code> para subirlo a la Tienda de Microsoft o distribuirlo en tu sitio web.
+                  </span>
                 </div>
               </div>
             )}

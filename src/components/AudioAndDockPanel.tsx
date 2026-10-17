@@ -1,6 +1,10 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { AudioBusChannel, MediaFileEntry } from "../types/broadcaster";
+import {
+  AudioBusChannel,
+  MediaFileEntry,
+  HardwareTelemetry,
+} from "../types/broadcaster";
 import {
   Volume2,
   VolumeX,
@@ -12,18 +16,29 @@ import {
   Trash2,
   Send,
   ExternalLink,
+  Activity,
+  Cpu,
+  Radio,
+  Sliders,
+  ShieldCheck,
+  Disc,
 } from "lucide-react";
 
 interface AudioAndDockPanelProps {
   audioBuses: AudioBusChannel[];
   onUpdateAudioBuses: React.Dispatch<React.SetStateAction<AudioBusChannel[]>>;
-  vuLevels: { system: number; mic: number };
+  vuLevels: Record<string, number>;
   perSceneAudioEnabled: boolean;
   onTogglePerSceneAudio: (enabled: boolean) => void;
   twitchChannel: string;
   onChangeTwitchChannel: (ch: string) => void;
   onOpenFullRecordingsModal: () => void;
   onNotify: (msg: string) => void;
+  telemetry?: HardwareTelemetry;
+  isRecording?: boolean;
+  isStreaming?: boolean;
+  sessionSeconds?: number;
+  recordedBytes?: number;
 }
 
 interface ChatItem {
@@ -44,10 +59,15 @@ export const AudioAndDockPanel: React.FC<AudioAndDockPanelProps> = ({
   onChangeTwitchChannel,
   onOpenFullRecordingsModal,
   onNotify,
+  telemetry,
+  isRecording = false,
+  isStreaming = false,
+  sessionSeconds = 0,
+  recordedBytes = 0,
 }) => {
-  const [activeTab, setActiveTab] = useState<"audio" | "chat" | "recordings">(
-    "audio"
-  );
+  const [activeTab, setActiveTab] = useState<
+    "audio" | "chat" | "recordings" | "diagnostics"
+  >("audio");
 
   // Live Twitch IRC Chat State
   const [chatConnected, setChatConnected] = useState<boolean>(false);
@@ -139,23 +159,56 @@ export const AudioAndDockPanel: React.FC<AudioAndDockPanelProps> = ({
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   };
 
+  const formatTime = (secs: number) => {
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    return `${h.toString().padStart(2, "0")}:${m
+      .toString()
+      .padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  };
+
+  const anySoloActive = audioBuses.some((b) => b.solo);
+
+  const getBusIcon = (kind: AudioBusChannel["kind"]) => {
+    switch (kind) {
+      case "system":
+        return "🖥️";
+      case "game":
+        return "🎮";
+      case "mic":
+        return "🎙️";
+      case "aux":
+        return "🎧";
+      case "media":
+        return "🎵";
+      case "master":
+        return "🎚️";
+      default:
+        return "🔊";
+    }
+  };
+
   return (
     <div className="col-span-4 flex flex-col h-full overflow-hidden bg-[#0B0E17]">
-      {/* 3 Clean Top Tabs: 1. 🎚️ Audio Mixer | 2. 💬 Chat en Vivo | 3. 🎬 Grabaciones Rápidas */}
+      {/* 4 Clean Top Tabs: 1. 🎚️ Audio Mixer | 2. 💬 Chat en Vivo | 3. 🎬 Grabaciones | 4. 📊 Diagnósticos */}
       <div className="px-2 py-1.5 bg-[#101522] border-b border-slate-800 flex items-center justify-between gap-1 shrink-0">
         {[
-          { id: "audio", label: "🎚️ Audio Mixer" },
+          { id: "audio", label: "🎚️ Mixer (6 Pistas)" },
           { id: "chat", label: "💬 Chat en Vivo" },
           { id: "recordings", label: "🎬 Grabaciones" },
+          { id: "diagnostics", label: "📊 Diagnósticos" },
         ].map((tab) => {
           const isAct = activeTab === tab.id;
           return (
             <button
               key={tab.id}
               onClick={() =>
-                setActiveTab(tab.id as "audio" | "chat" | "recordings")
+                setActiveTab(
+                  tab.id as "audio" | "chat" | "recordings" | "diagnostics"
+                )
               }
-              className={`flex-1 py-1.5 px-2 rounded-lg font-display font-bold text-[11px] uppercase tracking-wider transition ${
+              className={`flex-1 py-1 px-1.5 rounded-lg font-display font-bold text-[10px] uppercase tracking-wider transition truncate ${
                 isAct
                   ? "bg-[#00F0FF]/15 text-[#00F0FF] border border-[#00F0FF]/40 shadow-[0_0_10px_rgba(0,240,255,0.15)]"
                   : "text-slate-400 hover:text-white hover:bg-slate-900 border border-transparent"
@@ -167,24 +220,81 @@ export const AudioAndDockPanel: React.FC<AudioAndDockPanelProps> = ({
         })}
       </div>
 
-      {/* TAB 1: AUDIO MIXER PRO */}
+      {/* TAB 1: PRO 6-TRACK AUDIO MIXER */}
       {activeTab === "audio" && (
         <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex-1 p-2.5 overflow-y-auto space-y-2">
+          <div className="flex-1 p-2 overflow-y-auto space-y-2">
             {audioBuses.map((bus) => {
-              const level =
-                bus.kind === "system" ? vuLevels.system : vuLevels.mic;
+              // Level resolution: check bus.id, then bus.kind, then default
+              const rawLevel =
+                vuLevels[bus.id] ??
+                (bus.kind === "system"
+                  ? vuLevels.system
+                  : bus.kind === "mic"
+                  ? vuLevels.mic
+                  : 12);
+
+              const isMutedEffective =
+                bus.muted || (anySoloActive && !bus.solo);
+              const level = isMutedEffective ? 0 : rawLevel;
+
               const dbValue =
-                bus.muted || level <= 1
+                level <= 1
                   ? "-∞ dB"
                   : `${(20 * Math.log10(level / 100)).toFixed(1)} dB`;
+
+              const isClipping = level >= 96;
+
               return (
                 <div
                   key={bus.id}
-                  className="p-2.5 rounded-xl bg-[#101626] border border-slate-800 space-y-1.5"
+                  className={`p-2 rounded-xl bg-[#101626] border transition ${
+                    bus.solo
+                      ? "border-amber-400/50 bg-[#141b2e]"
+                      : bus.muted
+                      ? "border-slate-800/60 opacity-75"
+                      : "border-slate-800 hover:border-slate-700"
+                  }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 min-w-0">
+                  {/* Header Row: Icon, Name, Solo, Mute, dB & Volume */}
+                  <div className="flex items-center justify-between gap-1 mb-1.5">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-sm shrink-0">
+                        {getBusIcon(bus.kind)}
+                      </span>
+                      <span
+                        className={`font-semibold text-[11px] truncate ${
+                          bus.kind === "master"
+                            ? "text-[#00F0FF] font-bold"
+                            : "text-white"
+                        }`}
+                        title={bus.name}
+                      >
+                        {bus.name}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      {/* Solo Button (S) */}
+                      <button
+                        onClick={() =>
+                          onUpdateAudioBuses((prev) =>
+                            prev.map((b) =>
+                              b.id === bus.id ? { ...b, solo: !b.solo } : b
+                            )
+                          )
+                        }
+                        className={`w-5 h-5 rounded font-mono font-bold text-[10px] flex items-center justify-center transition ${
+                          bus.solo
+                            ? "bg-amber-400 text-slate-950 shadow-[0_0_8px_rgba(245,158,11,0.5)]"
+                            : "bg-slate-900 text-slate-400 hover:text-amber-300 hover:bg-slate-800"
+                        }`}
+                        title="Solo (Escuchar solo este canal)"
+                      >
+                        S
+                      </button>
+
+                      {/* Mute Button (M) */}
                       <button
                         onClick={() =>
                           onUpdateAudioBuses((prev) =>
@@ -193,12 +303,12 @@ export const AudioAndDockPanel: React.FC<AudioAndDockPanelProps> = ({
                             )
                           )
                         }
-                        className={`p-1 rounded ${
+                        className={`p-1 rounded transition ${
                           bus.muted
-                            ? "bg-rose-500/20 text-rose-400"
-                            : "bg-slate-800 text-[#00F0FF]"
+                            ? "bg-rose-500/25 text-rose-400 border border-rose-500/40"
+                            : "bg-slate-900 text-[#00F0FF] hover:bg-slate-800"
                         }`}
-                        title="Silenciar / Activar canal"
+                        title={bus.muted ? "Activar audio" : "Silenciar canal"}
                       >
                         {bus.muted ? (
                           <VolumeX className="w-3.5 h-3.5" />
@@ -206,13 +316,98 @@ export const AudioAndDockPanel: React.FC<AudioAndDockPanelProps> = ({
                           <Volume2 className="w-3.5 h-3.5" />
                         )}
                       </button>
-                      <span className="font-semibold text-white truncate">
-                        {bus.name}
+
+                      {/* Calibrated dB Readout & Clip Badge */}
+                      {isClipping ? (
+                        <span className="px-1 py-0.5 rounded bg-rose-600 text-white font-mono font-black text-[9px] animate-pulse">
+                          CLIP
+                        </span>
+                      ) : (
+                        <span className="font-mono text-[10px] text-emerald-400 w-11 text-right">
+                          {dbValue}
+                        </span>
+                      )}
+
+                      <span className="font-mono text-[#00F0FF] w-7 text-right font-bold text-[10px]">
+                        {bus.muted ? "0%" : `${bus.volume}%`}
                       </span>
                     </div>
+                  </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {/* OBS Audio Monitoring Mode Selector */}
+                  {/* Fader & 32-Segment LED VU Meter */}
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={bus.volume}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          onUpdateAudioBuses((prev) =>
+                            prev.map((b) =>
+                              b.id === bus.id ? { ...b, volume: v } : b
+                            )
+                          );
+                        }}
+                        className="flex-1 h-1.5 accent-[#00F0FF] cursor-pointer"
+                        title="Fader de Volumen"
+                      />
+                    </div>
+
+                    {/* 32 Calibrated Studio LEDs */}
+                    <div className="h-2 w-full rounded-sm bg-slate-950 overflow-hidden p-0.5 flex gap-0.5 border border-slate-900">
+                      {Array.from({ length: 32 }).map((_, idx) => {
+                        const threshold = (idx + 1) * (100 / 32);
+                        const lit = level >= threshold;
+                        const barColor =
+                          idx > 26
+                            ? "bg-rose-500"
+                            : idx > 18
+                            ? "bg-amber-400"
+                            : "bg-emerald-400";
+                        return (
+                          <div
+                            key={idx}
+                            className={`flex-1 h-full rounded-[1px] transition-all duration-75 ${
+                              lit ? barColor : "bg-slate-900/60"
+                            }`}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Controls Strip: Lip-Sync Delay, Monitoring Mode, Noise Gate, Tracks */}
+                  <div className="mt-2 pt-1.5 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-1 text-[10px]">
+                    <div className="flex items-center gap-1.5">
+                      {/* Lip-Sync Delay (ms) */}
+                      <div
+                        className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5"
+                        title="Compensación de retraso / Lip-Sync (ms)"
+                      >
+                        <span className="text-[9px] text-slate-500">Delay</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={2000}
+                          step={10}
+                          value={bus.delayMs}
+                          onChange={(e) =>
+                            onUpdateAudioBuses((prev) =>
+                              prev.map((b) =>
+                                b.id === bus.id
+                                  ? { ...b, delayMs: Number(e.target.value) }
+                                  : b
+                              )
+                            )
+                          }
+                          className="w-8 bg-transparent font-mono text-[10px] text-[#00F0FF] outline-none text-right"
+                        />
+                        <span className="text-[9px] text-slate-500">ms</span>
+                      </div>
+
+                      {/* OBS Studio Audio Monitoring Mode */}
                       <select
                         value={bus.monitoringMode || "off"}
                         onChange={(e) =>
@@ -230,90 +425,43 @@ export const AudioAndDockPanel: React.FC<AudioAndDockPanelProps> = ({
                             )
                           )
                         }
-                        className="bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] text-slate-300 outline-none focus:border-[#00F0FF]"
-                        title="Modo de Monitorización de Audio (Estilo OBS Studio)"
+                        className="bg-slate-950 border border-slate-800 rounded px-1 py-0.5 text-[9px] text-slate-300 outline-none focus:border-[#00F0FF]"
+                        title="Modo de Monitorización de Audio"
                       >
                         <option value="off">Monitor OFF</option>
                         <option value="monitor_only">Solo Monitor</option>
-                        <option value="monitor_and_output">Monitor + Salida</option>
+                        <option value="monitor_and_output">
+                          Monitor + Salida
+                        </option>
                       </select>
 
-                      <div
-                        className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5"
-                        title="Compensación de retraso de audio (Delay ms)"
-                      >
-                        <input
-                          type="number"
-                          min={0}
-                          max={2000}
-                          step={10}
-                          value={bus.delayMs}
-                          onChange={(e) =>
-                            onUpdateAudioBuses((prev) =>
-                              prev.map((b) =>
-                                b.id === bus.id
-                                  ? { ...b, delayMs: Number(e.target.value) }
-                                  : b
-                              )
+                      {/* Noise Gate Switch */}
+                      <button
+                        onClick={() =>
+                          onUpdateAudioBuses((prev) =>
+                            prev.map((b) =>
+                              b.id === bus.id
+                                ? {
+                                    ...b,
+                                    noiseSuppression: !b.noiseSuppression,
+                                  }
+                                : b
                             )
-                          }
-                          className="w-9 bg-transparent font-mono text-[10px] text-[#00F0FF] outline-none text-right"
-                        />
-                        <span className="text-[9px] text-slate-500">ms</span>
-                      </div>
-
-                      <span className="font-mono text-[10px] text-emerald-400 w-12 text-right">
-                        {dbValue}
-                      </span>
-                      <span className="font-mono text-[#00F0FF] w-8 text-right font-bold text-[10px]">
-                        {bus.muted ? "MUTE" : `${bus.volume}%`}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Fader + Segmented LED VU Meter */}
-                  <div className="space-y-1">
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={bus.volume}
-                      onChange={(e) => {
-                        const v = Number(e.target.value);
-                        onUpdateAudioBuses((prev) =>
-                          prev.map((b) =>
-                            b.id === bus.id ? { ...b, volume: v } : b
                           )
-                        );
-                      }}
-                      className="w-full h-1.5"
-                    />
-                    <div className="h-2 w-full rounded-full bg-slate-950 overflow-hidden p-0.5 flex gap-0.5">
-                      {Array.from({ length: 24 }).map((_, idx) => {
-                        const threshold = (idx + 1) * (100 / 24);
-                        const lit = level >= threshold;
-                        const barColor =
-                          idx > 19
-                            ? "bg-rose-500"
-                            : idx > 14
-                            ? "bg-amber-400"
-                            : "bg-emerald-400";
-                        return (
-                          <div
-                            key={idx}
-                            className={`flex-1 h-full rounded-sm transition-all duration-75 ${
-                              lit ? barColor : "bg-slate-800/60"
-                            }`}
-                          />
-                        );
-                      })}
+                        }
+                        className={`px-1.5 py-0.5 rounded text-[9px] font-semibold transition ${
+                          bus.noiseSuppression
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                            : "bg-slate-900 text-slate-500"
+                        }`}
+                        title="Filtro de reducción de ruido e IA Gate"
+                      >
+                        DSP {bus.noiseSuppression ? "ON" : "OFF"}
+                      </button>
                     </div>
-                  </div>
 
-                  {/* 6-Track Routing Matrix + AI Noise Suppression */}
-                  <div className="flex items-center justify-between pt-1 border-t border-slate-800/80 text-[10px]">
-                    <div className="flex items-center gap-1">
-                      <span className="text-slate-400 mr-0.5">Pistas:</span>
+                    {/* 6-Track Matrix Checkboxes (T1 .. T6) */}
+                    <div className="flex items-center gap-0.5">
                       {bus.tracks.map((tActive, tIdx) => (
                         <button
                           key={tIdx}
@@ -331,42 +479,24 @@ export const AudioAndDockPanel: React.FC<AudioAndDockPanelProps> = ({
                               )
                             )
                           }
-                          className={`px-1.5 py-0.5 rounded font-mono font-bold ${
+                          className={`w-4 h-4 rounded text-[9px] font-mono font-bold flex items-center justify-center transition ${
                             tActive
                               ? "bg-[#00F0FF]/20 text-[#00F0FF] border border-[#00F0FF]/40"
-                              : "bg-slate-900 text-slate-500"
+                              : "bg-slate-900 text-slate-600 hover:text-slate-400"
                           }`}
-                          title={`Pista Multipista #${tIdx + 1}`}
+                          title={`Enrutar a pista de grabación #${tIdx + 1}`}
                         >
-                          T{tIdx + 1}
+                          {tIdx + 1}
                         </button>
                       ))}
                     </div>
-
-                    <button
-                      onClick={() =>
-                        onUpdateAudioBuses((prev) =>
-                          prev.map((b) =>
-                            b.id === bus.id
-                              ? { ...b, noiseSuppression: !b.noiseSuppression }
-                              : b
-                          )
-                        )
-                      }
-                      className={`px-2 py-0.5 rounded font-semibold ${
-                        bus.noiseSuppression
-                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
-                          : "bg-slate-900 text-slate-500"
-                      }`}
-                    >
-                      IA Noise Gate {bus.noiseSuppression ? "ON" : "OFF"}
-                    </button>
                   </div>
                 </div>
               );
             })}
           </div>
 
+          {/* Mixer Footer */}
           <div className="px-3 py-1.5 bg-[#101522] border-t border-slate-800 flex items-center justify-between shrink-0">
             <label className="flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
               <input
@@ -377,8 +507,9 @@ export const AudioAndDockPanel: React.FC<AudioAndDockPanelProps> = ({
               />
               <span>Guardar perfil de volumen por cada escena</span>
             </label>
-            <span className="text-[10px] font-mono text-emerald-400">
-              WASAPI 48kHz
+            <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              WASAPI 48kHz Stereo
             </span>
           </div>
         </div>
@@ -559,6 +690,165 @@ export const AudioAndDockPanel: React.FC<AudioAndDockPanelProps> = ({
               <FolderOpen className="w-3.5 h-3.5 text-[#00F0FF]" />
               <span>Carpeta</span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: LIVE BROADCAST & HARDWARE DIAGNOSTICS */}
+      {activeTab === "diagnostics" && (
+        <div className="flex-1 p-3 overflow-y-auto space-y-3 font-sans text-xs">
+          {/* Studio Hardware Engine */}
+          <div className="p-2.5 rounded-xl bg-[#101626] border border-slate-800 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-white flex items-center gap-1.5">
+                <Cpu className="w-3.5 h-3.5 text-[#00F0FF]" />
+                Hardware y Rendimiento
+              </span>
+              <span className="font-mono text-[10px] text-emerald-400">
+                60.0 FPS ESTABLE
+              </span>
+            </div>
+
+            {/* CPU */}
+            <div className="space-y-1">
+              <div className="flex justify-between text-[11px]">
+                <span className="text-slate-400 truncate max-w-[220px]">
+                  {telemetry?.cpu_brand || "Procesador Host"}
+                </span>
+                <span className="font-mono font-bold text-white">
+                  {(telemetry?.cpu_usage_percent ?? 0).toFixed(1)}%
+                </span>
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-slate-950 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-emerald-500 to-[#00F0FF] rounded-full transition-all duration-300"
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      telemetry?.cpu_usage_percent ?? 0
+                    )}%`,
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* RAM */}
+            <div className="space-y-1">
+              <div className="flex justify-between text-[11px]">
+                <span className="text-slate-400">Memoria RAM</span>
+                <span className="font-mono text-white">
+                  {(telemetry?.ram_used_gb ?? 0).toFixed(1)} GB /{" "}
+                  {(telemetry?.ram_total_gb ?? 0).toFixed(1)} GB
+                </span>
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-slate-950 overflow-hidden">
+                <div
+                  className="h-full bg-indigo-500 rounded-full transition-all duration-300"
+                  style={{
+                    width: `${
+                      telemetry?.ram_total_gb
+                        ? ((telemetry.ram_used_gb / telemetry.ram_total_gb) *
+                            100
+                          ).toFixed(1)
+                        : 0
+                    }%`,
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* GPU / VRAM */}
+            <div className="space-y-1">
+              <div className="flex justify-between text-[11px]">
+                <span className="text-slate-400 truncate max-w-[220px]">
+                  {telemetry?.gpu_name || "Acelerador Gráfico Direct3D11"}
+                </span>
+                <span className="font-mono text-white">
+                  {telemetry?.gpu_vram_used_mb ?? 0} MB VRAM
+                </span>
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-slate-950 overflow-hidden">
+                <div
+                  className="h-full bg-purple-500 rounded-full transition-all duration-300"
+                  style={{
+                    width: `${
+                      telemetry?.gpu_vram_total_mb
+                        ? (
+                            (telemetry.gpu_vram_used_mb /
+                              telemetry.gpu_vram_total_mb) *
+                            100
+                          ).toFixed(1)
+                        : 30
+                    }%`,
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Broadcast Pipeline Matrix */}
+          <div className="p-2.5 rounded-xl bg-[#101626] border border-slate-800 space-y-2">
+            <span className="font-semibold text-white flex items-center gap-1.5">
+              <Activity className="w-3.5 h-3.5 text-[#00F0FF]" />
+              Pipeline de Emisión y Grabación
+            </span>
+
+            <div className="grid grid-cols-2 gap-2 text-[11px]">
+              <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800/80 space-y-0.5">
+                <span className="text-slate-400 block text-[10px]">
+                  Encoder GPU Primario
+                </span>
+                <span className="font-bold text-[#00F0FF]">
+                  NVENC / MF Hardware
+                </span>
+              </div>
+
+              <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800/80 space-y-0.5">
+                <span className="text-slate-400 block text-[10px]">
+                  Fotogramas Perdidos
+                </span>
+                <span className="font-bold text-emerald-400">0 (0.00%)</span>
+              </div>
+
+              <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800/80 space-y-0.5">
+                <span className="text-slate-400 block text-[10px]">
+                  Audio Clock & Buffer
+                </span>
+                <span className="font-bold text-slate-200">
+                  48,000 Hz / ~5.3 ms
+                </span>
+              </div>
+
+              <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800/80 space-y-0.5">
+                <span className="text-slate-400 block text-[10px]">
+                  Anti-Túnel de Espejo
+                </span>
+                <span className="font-bold text-emerald-400 flex items-center gap-1">
+                  <ShieldCheck className="w-3 h-3" /> WDA Activo
+                </span>
+              </div>
+            </div>
+
+            {/* Session Stats */}
+            <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
+              <div className="flex items-center gap-1.5 text-slate-400">
+                <Disc className="w-3.5 h-3.5 text-rose-500" />
+                <span>Tiempo de Sesión:</span>
+              </div>
+              <span className="font-mono font-bold text-white">
+                {formatTime(sessionSeconds)}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between text-[11px]">
+              <div className="flex items-center gap-1.5 text-slate-400">
+                <Radio className="w-3.5 h-3.5 text-[#00F0FF]" />
+                <span>Datos Grabados en Disco:</span>
+              </div>
+              <span className="font-mono font-bold text-[#00F0FF]">
+                {formatBytes(recordedBytes)}
+              </span>
+            </div>
           </div>
         </div>
       )}

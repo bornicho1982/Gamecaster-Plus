@@ -153,9 +153,11 @@ export interface TransitionOverrideRule {
 export interface AudioBusChannel {
   id: string;
   name: string;
-  kind: "system" | "mic" | "media";
+  kind: "system" | "mic" | "media" | "master" | "game" | "aux";
   volume: number; // 0..100
   muted: boolean;
+  solo?: boolean;
+  pan?: number; // -100 (L) to +100 (R)
   gainDb: number; // -20..+20 dB
   delayMs: number; // 0..2000 ms lip-sync offset
   monoMix: boolean;

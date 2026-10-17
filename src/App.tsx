@@ -207,22 +207,184 @@ const INITIAL_SCENES: Scene[] = [
   },
 ];
 
+const INITIAL_STREAM_CHANNELS: StreamChannelConfig[] = [
+  {
+    id: "ch_twitch",
+    platform: "Twitch",
+    name: "bornicho",
+    rtmpUrl: "rtmp://live.twitch.tv/app",
+    streamKey: "",
+    bitrateKbps: 6000,
+    enabled: true,
+  },
+  {
+    id: "ch_kick",
+    platform: "Kick",
+    name: "kick.com",
+    rtmpUrl: "rtmps://fa723fc1b171.global-contribute.live-video.net/app",
+    streamKey: "",
+    bitrateKbps: 6000,
+    enabled: false,
+  },
+  {
+    id: "ch_youtube",
+    platform: "YouTube Live",
+    name: "Canal Principal 4K60",
+    rtmpUrl: "rtmp://a.rtmp.youtube.com/live2",
+    streamKey: "",
+    bitrateKbps: 9000,
+    enabled: false,
+  },
+];
+
+const INITIAL_AUDIO_BUSES: AudioBusChannel[] = [
+  {
+    id: "bus_desktop_1",
+    name: "Audio Sistema 1 (WASAPI)",
+    kind: "system",
+    volume: 85,
+    muted: false,
+    solo: false,
+    pan: 0,
+    gainDb: 0,
+    delayMs: 0,
+    monoMix: false,
+    noiseSuppression: false,
+    noiseGateThreshold: -45,
+    monitoringMode: "off",
+    tracks: [true, true, false, false, false, false],
+  },
+  {
+    id: "bus_desktop_2",
+    name: "Audio Juego / Discord",
+    kind: "game",
+    volume: 80,
+    muted: false,
+    solo: false,
+    pan: 0,
+    gainDb: 0,
+    delayMs: 0,
+    monoMix: false,
+    noiseSuppression: false,
+    noiseGateThreshold: -45,
+    monitoringMode: "off",
+    tracks: [true, false, true, false, false, false],
+  },
+  {
+    id: "bus_mic_1",
+    name: "Micrófono Principal (IA DSP)",
+    kind: "mic",
+    volume: 90,
+    muted: false,
+    solo: false,
+    pan: 0,
+    gainDb: 2,
+    delayMs: 40,
+    monoMix: true,
+    noiseSuppression: true,
+    noiseGateThreshold: -38,
+    monitoringMode: "off",
+    tracks: [true, false, false, true, false, false],
+  },
+  {
+    id: "bus_mic_2",
+    name: "Micrófono Aux 2 / Chat USB",
+    kind: "aux",
+    volume: 75,
+    muted: false,
+    solo: false,
+    pan: 0,
+    gainDb: 0,
+    delayMs: 0,
+    monoMix: true,
+    noiseSuppression: false,
+    noiseGateThreshold: -40,
+    monitoringMode: "off",
+    tracks: [true, false, false, false, true, false],
+  },
+  {
+    id: "bus_media",
+    name: "Sonido Multimedia / Navegador",
+    kind: "media",
+    volume: 70,
+    muted: false,
+    solo: false,
+    pan: 0,
+    gainDb: 0,
+    delayMs: 0,
+    monoMix: false,
+    noiseSuppression: false,
+    noiseGateThreshold: -50,
+    monitoringMode: "off",
+    tracks: [true, false, false, false, false, true],
+  },
+  {
+    id: "bus_master",
+    name: "Bus Maestro PGM (Salida Final)",
+    kind: "master",
+    volume: 100,
+    muted: false,
+    solo: false,
+    pan: 0,
+    gainDb: 0,
+    delayMs: 0,
+    monoMix: false,
+    noiseSuppression: false,
+    noiseGateThreshold: -60,
+    monitoringMode: "monitor_and_output",
+    tracks: [true, true, true, true, true, true],
+  },
+];
+
+const WORKSPACE_STORAGE_KEY = "gamecaster_plus_workspace_v46";
+
+interface SavedWorkspacePayload {
+  globalSettings?: GlobalSettings;
+  scenes?: Scene[];
+  activeSceneId?: string;
+  audioBuses?: AudioBusChannel[];
+  streamChannels?: StreamChannelConfig[];
+  autoSceneRules?: AutoSceneRule[];
+  timestamp?: number;
+}
+
+function loadSavedWorkspace(): SavedWorkspacePayload | null {
+  try {
+    const raw = localStorage.getItem(WORKSPACE_STORAGE_KEY);
+    if (raw) {
+      return JSON.parse(raw) as SavedWorkspacePayload;
+    }
+  } catch (e) {
+    console.warn("Could not load saved workspace from localStorage:", e);
+  }
+  return null;
+}
+
 export const App: React.FC = () => {
+  const savedWs = useRef<SavedWorkspacePayload | null>(loadSavedWorkspace());
+
   // Global Settings State
-  const [globalSettings, setGlobalSettings] = useState<GlobalSettings>(
-    DEFAULT_GLOBAL_SETTINGS
-  );
+  const [globalSettings, setGlobalSettings] = useState<GlobalSettings>(() => {
+    return savedWs.current?.globalSettings ?? DEFAULT_GLOBAL_SETTINGS;
+  });
   const [settingsModalOpen, setSettingsModalOpen] = useState<boolean>(false);
   const [settingsInitialTab, setSettingsInitialTab] =
     useState<SettingsTabId>("general");
 
   // Scenes & Studio State
-  const [scenes, setScenes] = useState<Scene[]>(INITIAL_SCENES);
-  const [activeSceneId, setActiveSceneId] = useState<string>("scene_1");
+  const [scenes, setScenes] = useState<Scene[]>(() => {
+    return savedWs.current?.scenes ?? INITIAL_SCENES;
+  });
+  const [activeSceneId, setActiveSceneId] = useState<string>(() => {
+    return savedWs.current?.activeSceneId ?? "scene_1";
+  });
   const [previewSceneId, setPreviewSceneId] = useState<string>("scene_2");
   const [studioMode, setStudioMode] = useState<boolean>(false);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(
-    INITIAL_SCENES[0].sources[0].id
+    () => {
+      const initialSc = savedWs.current?.scenes?.[0] ?? INITIAL_SCENES[0];
+      return initialSc.sources[0]?.id ?? null;
+    }
   );
 
   const isPortraitCanvas = globalSettings.outputResolution === "1080x1920";
@@ -255,52 +417,37 @@ export const App: React.FC = () => {
   // Auto Scene Switcher State
   const [autoSwitcherEnabled, setAutoSwitcherEnabled] =
     useState<boolean>(false);
-  const [autoSceneRules, setAutoSceneRules] = useState<AutoSceneRule[]>([
-    {
-      id: "asr_1",
-      windowTitleMatch: "Notepad",
-      targetSceneId: "scene_2",
-      enabled: true,
-    },
-  ]);
+  const [autoSceneRules, setAutoSceneRules] = useState<AutoSceneRule[]>(() => {
+    return (
+      savedWs.current?.autoSceneRules ?? [
+        {
+          id: "asr_1",
+          windowTitleMatch: "Notepad",
+          targetSceneId: "scene_2",
+          enabled: true,
+        },
+      ]
+    );
+  });
 
   // Pro 6-Track Audio Mixer State
   const [perSceneAudioEnabled, setPerSceneAudioEnabled] =
     useState<boolean>(true);
-  const [audioBuses, setAudioBuses] = useState<AudioBusChannel[]>([
-    {
-      id: "bus_system",
-      name: "Audio del Sistema / Juego",
-      kind: "system",
-      volume: 85,
-      muted: false,
-      gainDb: 0,
-      delayMs: 0,
-      monoMix: false,
-      noiseSuppression: false,
-      noiseGateThreshold: -45,
-      tracks: [true, true, false, false, false, false],
-    },
-    {
-      id: "bus_mic",
-      name: "Micrófono Principal (IA DSP)",
-      kind: "mic",
-      volume: 90,
-      muted: false,
-      gainDb: 2,
-      delayMs: 40,
-      monoMix: true,
-      noiseSuppression: true,
-      noiseGateThreshold: -38,
-      tracks: [true, false, true, false, false, false],
-    },
-  ]);
+  const [audioBuses, setAudioBuses] = useState<AudioBusChannel[]>(() => {
+    return savedWs.current?.audioBuses ?? INITIAL_AUDIO_BUSES;
+  });
   const audioBusesRef = useRef<AudioBusChannel[]>(audioBuses);
   useEffect(() => {
     audioBusesRef.current = audioBuses;
   }, [audioBuses]);
 
-  const [vuLevels, setVuLevels] = useState<{ system: number; mic: number }>({
+  const [vuLevels, setVuLevels] = useState<Record<string, number>>({
+    bus_desktop_1: 18,
+    bus_desktop_2: 14,
+    bus_mic_1: 12,
+    bus_mic_2: 8,
+    bus_media: 10,
+    bus_master: 22,
     system: 18,
     mic: 12,
   });
@@ -317,34 +464,38 @@ export const App: React.FC = () => {
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
 
   // Multistreaming Channels
-  const [streamChannels, setStreamChannels] = useState<StreamChannelConfig[]>([
-    {
-      id: "ch_twitch",
-      platform: "Twitch",
-      name: "bornicho",
-      rtmpUrl: "rtmp://live.twitch.tv/app",
-      streamKey: "",
-      bitrateKbps: 6000,
-      enabled: true,
-    },
-    {
-      id: "ch_kick",
-      platform: "Kick",
-      name: "kick.com",
-      rtmpUrl: "rtmps://fa723fc1b171.global-contribute.live-video.net/app",
-      streamKey: "",
-      bitrateKbps: 6000,
-      enabled: false,
-    },
-    {
-      id: "ch_youtube",
-      platform: "YouTube Live",
-      name: "Canal Principal 4K60",
-      rtmpUrl: "rtmp://a.rtmp.youtube.com/live2",
-      streamKey: "",
-      bitrateKbps: 9000,
-      enabled: false,
-    },
+  const [streamChannels, setStreamChannels] = useState<StreamChannelConfig[]>(
+    () => {
+      return savedWs.current?.streamChannels ?? INITIAL_STREAM_CHANNELS;
+    }
+  );
+
+  // Auto-Save Workspace to LocalStorage on Any Change
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        const payload: SavedWorkspacePayload = {
+          globalSettings,
+          scenes,
+          activeSceneId,
+          audioBuses,
+          streamChannels,
+          autoSceneRules,
+          timestamp: Date.now(),
+        };
+        localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(payload));
+      } catch (err) {
+        console.warn("Auto-save failed:", err);
+      }
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [
+    globalSettings,
+    scenes,
+    activeSceneId,
+    audioBuses,
+    streamChannels,
+    autoSceneRules,
   ]);
 
   // Modals & Dropdowns
@@ -589,27 +740,59 @@ export const App: React.FC = () => {
         micVal = Math.min(100, Math.round(avg * 1.65));
       }
       setVuLevels((prev) => {
-        const sysBus = audioBusesRef.current.find((b) => b.kind === "system");
-        const micBus = audioBusesRef.current.find((b) => b.kind === "mic");
-        const sysTarget = sysBus?.muted
-          ? 0
-          : Math.round(
-              ((sysBus?.volume || 80) * (0.45 + Math.random() * 0.25))
+        const nextMap: Record<string, number> = { ...prev };
+        let masterPeak = 0;
+        const anySolo = audioBusesRef.current.some((b) => b.solo);
+
+        audioBusesRef.current.forEach((bus) => {
+          if (bus.kind === "master") return;
+          const isSilenced = bus.muted || (anySolo && !bus.solo);
+          if (isSilenced) {
+            nextMap[bus.id] = 0;
+            return;
+          }
+
+          let currentVal = 0;
+          if (bus.kind === "mic") {
+            currentVal = Math.round((micVal * bus.volume) / 100);
+          } else if (bus.kind === "system" || bus.kind === "game") {
+            const seed = Math.sin(Date.now() / 600) * 0.2 + 0.5;
+            currentVal = Math.round(
+              bus.volume * seed * (0.6 + Math.random() * 0.4)
             );
-        const nextSys = Math.round(prev.system * 0.4 + sysTarget * 0.6);
-        const finalMic = micBus?.muted
+          } else if (bus.kind === "aux") {
+            currentVal = Math.round((micVal * 0.7 * bus.volume) / 100);
+          } else {
+            currentVal = Math.round(
+              bus.volume * 0.4 * (0.8 + Math.random() * 0.3)
+            );
+          }
+
+          const smoothed = Math.round(
+            (prev[bus.id] || 0) * 0.3 + currentVal * 0.7
+          );
+          nextMap[bus.id] = Math.min(100, Math.max(0, smoothed));
+          if (smoothed > masterPeak) masterPeak = smoothed;
+        });
+
+        // Master level
+        const masterBus = audioBusesRef.current.find(
+          (b) => b.kind === "master"
+        );
+        const isMasterSilenced = masterBus?.muted;
+        nextMap["bus_master"] = isMasterSilenced
           ? 0
-          : Math.round((micVal * (micBus?.volume || 90)) / 100);
-        if (
-          Math.abs(prev.system - nextSys) < 2 &&
-          Math.abs(prev.mic - finalMic) < 2
-        ) {
-          return prev;
-        }
-        return {
-          system: nextSys,
-          mic: finalMic,
-        };
+          : Math.min(
+              100,
+              Math.round((masterPeak * (masterBus?.volume ?? 100)) / 100)
+            );
+
+        // Legacy compatibility
+        nextMap.system =
+          nextMap["bus_desktop_1"] || nextMap["bus_system"] || 18;
+        nextMap.mic = nextMap["bus_mic_1"] || nextMap["bus_mic"] || 12;
+
+        return nextMap;
       });
     }, 180);
 
@@ -1650,7 +1833,7 @@ export const App: React.FC = () => {
           }
         />
 
-        {/* COLUMN 3: 3-TAB MULTI-DOCK (AUDIO MIXER, LIVE IRC CHAT, QUICK RECORDINGS) */}
+        {/* COLUMN 3: 4-TAB MULTI-DOCK (PRO 6-TRACK MIXER, LIVE IRC CHAT, QUICK RECORDINGS, DIAGNOSTICS) */}
         <AudioAndDockPanel
           audioBuses={audioBuses}
           onUpdateAudioBuses={setAudioBuses}
@@ -1663,6 +1846,11 @@ export const App: React.FC = () => {
           }
           onOpenFullRecordingsModal={() => setActiveStudioModal("recordings")}
           onNotify={showToast}
+          telemetry={telemetry}
+          isRecording={isRecording}
+          isStreaming={isStreaming}
+          sessionSeconds={sessionSeconds}
+          recordedBytes={recordedBytes}
         />
       </section>
 
