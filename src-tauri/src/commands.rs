@@ -8,7 +8,8 @@ use crate::engine::{
     },
     wgc_capture::{
         capture_desktop_jpeg_base64, capture_window_jpeg_base64, enumerate_visible_windows,
-        get_foreground_window_info, save_fullscreen_screenshot, WindowInfo,
+        get_foreground_window_info, save_fullscreen_screenshot,
+        set_process_windows_exclude_from_capture, WindowInfo,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,11 @@ pub struct MediaFileEntry {
     pub size_bytes: u64,
     pub created_display: String,
     pub kind: String, // "video" | "screenshot"
+}
+
+#[tauri::command]
+pub fn set_exclude_from_capture(_window: tauri::Window, exclude: bool) -> Result<(), String> {
+    set_process_windows_exclude_from_capture(exclude)
 }
 
 #[tauri::command]

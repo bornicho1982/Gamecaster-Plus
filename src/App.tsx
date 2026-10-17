@@ -4,12 +4,13 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   AudioBusChannel,
   AutoSceneRule,
+  DEFAULT_GLOBAL_SETTINGS,
+  GlobalSettings,
   HardwareTelemetry,
   Scene,
   SourceType,
   StageSource,
   StreamChannelConfig,
-  TRANSITION_LIST,
   TransitionId,
   TransitionOverrideRule,
   WindowInfo,
@@ -20,30 +21,23 @@ import { StageCompositor } from "./components/StageCompositor";
 import { SourcePropertiesModal } from "./components/SourcePropertiesModal";
 import { StudioModals, StudioModalType } from "./components/StudioModals";
 import {
+  GlobalSettingsModal,
+  SettingsTabId,
+} from "./components/GlobalSettingsModal";
+import { SourcesPanel } from "./components/SourcesPanel";
+import { ScenesGridPanel } from "./components/ScenesGridPanel";
+import { AudioAndDockPanel } from "./components/AudioAndDockPanel";
+import {
   Radio,
   CircleDot,
+  Pause,
+  Play,
   Camera,
   RotateCcw,
   Columns,
   Smartphone,
   Monitor,
-  Plus,
-  Eye,
-  EyeOff,
-  Lock,
-  Unlock,
-  ChevronUp,
-  ChevronDown,
-  Copy,
-  Trash2,
   Settings,
-  Volume2,
-  VolumeX,
-  Sliders,
-  FolderOpen,
-  Film,
-  Sparkles,
-  Layers,
   Cpu,
   HardDrive,
 } from "lucide-react";
@@ -51,53 +45,78 @@ import {
 const INITIAL_SCENES: Scene[] = [
   {
     id: "scene_1",
-    name: "Escena 1: Estudio Principal",
+    name: "Escena 1 — Pantalla / Juego Limpio",
     sources: [
       createDefaultSource("screen", "Captura de Monitor Principal", 1),
-      createDefaultSource("lower_third", "Tercio Inferior Broadcast", 2, {
-        textContent: "GAMECASTER PLUS // ESTUDIO PRO",
-        subtitleContent: "COMPOSITOR DIRECT3D • 1080P 60FPS SIN MARCA DE AGUA",
-        socialHandle: "@bornicho1982",
-        accentColor: "#00F0FF",
-      }),
     ],
     perSceneMicVolume: 90,
-    perSceneSystemVolume: 85,
-  },
-  {
-    id: "scene_2",
-    name: "Escena 2: Gameplay + PIP",
-    sources: [
-      createDefaultSource("screen", "Captura de Juego / Escritorio", 1),
-      createDefaultSource("text", "Rótulo Superior En Vivo", 2, {
-        textContent: "PARTIDA EN DIRECTO • 60 FPS",
-        fontSize: 42,
-        textColor: "#00F0FF",
-      }),
-    ],
-    perSceneMicVolume: 95,
     perSceneSystemVolume: 90,
   },
   {
-    id: "scene_3",
-    name: "Escena 3: Charlando (Just Chatting)",
+    id: "scene_2",
+    name: "Escena 2 — Gameplay + Cámara PIP",
     sources: [
-      createDefaultSource("color", "Fondo Degradado Obsidian", 1, {
-        bgColor: "#0B132B",
-        gradientEndColor: "#1C0F36",
-      }),
-      createDefaultSource("screen", "Monitor en Ventana PIP", 2, {
+      createDefaultSource("screen", "Captura de Monitor Principal", 1),
+      createDefaultSource("camera", "Cámara Web PIP", 2, {
         layout: {
-          x: 110,
-          y: 130,
-          width: 1120,
-          height: 630,
+          x: 1510,
+          y: 828,
+          width: 360,
+          height: 202,
           cropTop: 0,
           cropBottom: 0,
           cropLeft: 0,
           cropRight: 0,
           rotX: 0,
-          rotY: 8,
+          rotY: 0,
+          rotZ: 0,
+          flipH: false,
+          flipV: false,
+          keepAspectRatio: true,
+          lockPosition: false,
+          visible: true,
+        },
+        effects: {
+          shader: "none",
+          intensity: 75,
+          maskShape: "rounded",
+          borderEnabled: true,
+          borderThickness: 2,
+          borderRadius: 12,
+          borderColor: "#00F0FF",
+          dropShadowEnabled: true,
+          dropShadowDistance: 10,
+          dropShadowBlur: 18,
+          dropShadowColor: "#000000",
+          enterTransition: "fade",
+          exitTransition: "fade",
+          transitionDurationMs: 400,
+        },
+      }),
+    ],
+    perSceneMicVolume: 95,
+    perSceneSystemVolume: 85,
+  },
+  {
+    id: "scene_3",
+    name: "Escena 3 — Charlando (Just Chatting)",
+    sources: [
+      createDefaultSource("color", "Fondo Elegante Obsidian", 1, {
+        bgColor: "#080E20",
+        gradientEndColor: "#190E30",
+      }),
+      createDefaultSource("camera", "Cámara Web Principal", 2, {
+        layout: {
+          x: 370,
+          y: 120,
+          width: 1180,
+          height: 664,
+          cropTop: 0,
+          cropBottom: 0,
+          cropLeft: 0,
+          cropRight: 0,
+          rotX: 0,
+          rotY: 0,
           rotZ: 0,
           flipH: false,
           flipV: false,
@@ -115,7 +134,7 @@ const INITIAL_SCENES: Scene[] = [
           borderColor: "#00F0FF",
           dropShadowEnabled: true,
           dropShadowDistance: 14,
-          dropShadowBlur: 24,
+          dropShadowBlur: 26,
           dropShadowColor: "#000000",
           enterTransition: "fade",
           exitTransition: "fade",
@@ -123,10 +142,28 @@ const INITIAL_SCENES: Scene[] = [
         },
       }),
       createDefaultSource("lower_third", "Tercio Inferior Charlando", 3, {
-        textContent: "CHARLANDO CON EL CHAT EN VIVO",
-        subtitleContent: "DEBATE Y ANÁLISIS EN DIRECTO",
+        textContent: "GAMECASTER PLUS // ESTUDIO PRO",
+        subtitleContent: "CHARLANDO EN DIRECTO CON LA COMUNIDAD",
         socialHandle: "@bornicho1982",
-        accentColor: "#7C3AED",
+        accentColor: "#00F0FF",
+        layout: {
+          x: 64,
+          y: 875,
+          width: 960,
+          height: 145,
+          cropTop: 0,
+          cropBottom: 0,
+          cropLeft: 0,
+          cropRight: 0,
+          rotX: 0,
+          rotY: 0,
+          rotZ: 0,
+          flipH: false,
+          flipV: false,
+          keepAspectRatio: false,
+          lockPosition: false,
+          visible: true,
+        },
       }),
     ],
     perSceneMicVolume: 100,
@@ -134,21 +171,21 @@ const INITIAL_SCENES: Scene[] = [
   },
   {
     id: "scene_4",
-    name: "Escena 4: Ya Volvemos (BRB)",
+    name: "Escena 4 — Ya Volvemos (Pausa BRB)",
     sources: [
-      createDefaultSource("color", "Fondo Cyber Pausa", 1, {
-        bgColor: "#070A14",
-        gradientEndColor: "#2A081E",
+      createDefaultSource("color", "Fondo Oscuro Pausa BRB", 1, {
+        bgColor: "#060913",
+        gradientEndColor: "#24081B",
       }),
-      createDefaultSource("text", "Mensaje Ya Volvemos", 2, {
-        textContent: "YA VOLVEMOS EN UNOS MINUTOS...",
-        fontSize: 68,
-        textColor: "#FF2A54",
+      createDefaultSource("text", "Cartel Central Ya Volvemos", 2, {
+        textContent: "YA VOLVEMOS EN UNOS MINUTOS // BE RIGHT BACK",
+        fontSize: 56,
+        textColor: "#00F0FF",
         layout: {
-          x: 340,
-          y: 440,
-          width: 1240,
-          height: 160,
+          x: 240,
+          y: 460,
+          width: 1440,
+          height: 140,
           cropTop: 0,
           cropBottom: 0,
           cropLeft: 0,
@@ -171,21 +208,30 @@ const INITIAL_SCENES: Scene[] = [
 ];
 
 export const App: React.FC = () => {
+  // Global Settings State
+  const [globalSettings, setGlobalSettings] = useState<GlobalSettings>(
+    DEFAULT_GLOBAL_SETTINGS
+  );
+  const [settingsModalOpen, setSettingsModalOpen] = useState<boolean>(false);
+  const [settingsInitialTab, setSettingsInitialTab] =
+    useState<SettingsTabId>("general");
+
   // Scenes & Studio State
   const [scenes, setScenes] = useState<Scene[]>(INITIAL_SCENES);
   const [activeSceneId, setActiveSceneId] = useState<string>("scene_1");
   const [previewSceneId, setPreviewSceneId] = useState<string>("scene_2");
   const [studioMode, setStudioMode] = useState<boolean>(false);
-  const [isPortraitCanvas, setIsPortraitCanvas] = useState<boolean>(false);
-  const [snapToGrid, setSnapToGrid] = useState<boolean>(true);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(
     INITIAL_SCENES[0].sources[0].id
   );
 
+  const isPortraitCanvas = globalSettings.outputResolution === "1080x1920";
+  const snapToGrid = globalSettings.snapToGrid;
+
   // Transitions State
   const [activeTransition, setActiveTransition] =
     useState<TransitionId>("fade");
-  const [transitionDurationMs, setTransitionDurationMs] = useState<number>(600);
+  const [transitionDurationMs, setTransitionDurationMs] = useState<number>(500);
   const [transitionTriggerCount, setTransitionTriggerCount] =
     useState<number>(0);
   const [transitionRules, setTransitionRules] = useState<
@@ -196,7 +242,7 @@ export const App: React.FC = () => {
       fromSceneId: "scene_1",
       toSceneId: "scene_4",
       transition: "stinger",
-      durationMs: 800,
+      durationMs: 750,
     },
   ]);
 
@@ -258,14 +304,17 @@ export const App: React.FC = () => {
     mic: 12,
   });
 
-  // Recording, Composed Canvas Recording & Streaming State
-  const [isRecordingNative, setIsRecordingNative] = useState<boolean>(false);
-  const [isRecordingCanvas, setIsRecordingCanvas] = useState<boolean>(false);
+  // Unified Recording & Streaming State
+  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [isRecordingPaused, setIsRecordingPaused] = useState<boolean>(false);
+  const [activeRecordingEngine, setActiveRecordingEngine] = useState<
+    "composed_canvas" | "native_desktop" | null
+  >(null);
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [sessionSeconds, setSessionSeconds] = useState<number>(0);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
 
-  // Multistreaming Channels (pre-loaded with user's Twitch & Kick setup from Placements.bpres)
+  // Multistreaming Channels
   const [streamChannels, setStreamChannels] = useState<StreamChannelConfig[]>([
     {
       id: "ch_twitch",
@@ -298,7 +347,6 @@ export const App: React.FC = () => {
 
   // Modals & Dropdowns
   const [openMenu, setOpenMenu] = useState<string | null>(null);
-  const [showAddSourceMenu, setShowAddSourceMenu] = useState<boolean>(false);
   const [inspectorTarget, setInspectorTarget] = useState<{
     source: StageSource;
     sceneId: string;
@@ -331,12 +379,19 @@ export const App: React.FC = () => {
     scenes.find((s) => s.id === previewSceneId) || scenes[0];
   const editableScene = studioMode ? previewScene : activeScene;
 
-  const showToast = (msg: string) => {
+  const showToast = useCallback((msg: string) => {
     setStatusBanner(msg);
     setTimeout(() => {
       setStatusBanner((prev) => (prev === msg ? null : prev));
     }, 4500);
-  };
+  }, []);
+
+  // Ensure WDA_EXCLUDEFROMCAPTURE is applied on startup according to globalSettings
+  useEffect(() => {
+    invoke("set_exclude_from_capture", {
+      exclude: globalSettings.excludeFromCapture,
+    }).catch(() => {});
+  }, [globalSettings.excludeFromCapture]);
 
   const refreshOpenWindows = useCallback(async () => {
     try {
@@ -352,7 +407,6 @@ export const App: React.FC = () => {
     (targetSceneId: string) => {
       if (targetSceneId === activeSceneId) return;
 
-      // Check Transition Override Manager rules
       const rule = transitionRules.find(
         (r) => r.fromSceneId === activeSceneId && r.toSceneId === targetSceneId
       );
@@ -369,7 +423,6 @@ export const App: React.FC = () => {
         if (nextSc.sources.length > 0) {
           setSelectedSourceId(nextSc.sources[nextSc.sources.length - 1].id);
         }
-        // Apply Per-Scene Audio profile if enabled (`perSceneAudioplg.plg`)
         if (perSceneAudioEnabled) {
           setAudioBuses((prev) =>
             prev.map((bus) => {
@@ -411,7 +464,6 @@ export const App: React.FC = () => {
           setDesktopFrame(frame);
         }
 
-        // Capture any active specific window sources
         const allSources = [
           ...activeScene.sources,
           ...(studioMode ? previewScene.sources : []),
@@ -505,8 +557,16 @@ export const App: React.FC = () => {
     let micStream: MediaStream | null = null;
     let timerId: ReturnType<typeof setInterval>;
 
+    const audioConstraints: MediaStreamConstraints = {
+      audio:
+        globalSettings.micDeviceId && globalSettings.micDeviceId !== "default"
+          ? { deviceId: { exact: globalSettings.micDeviceId } }
+          : true,
+      video: false,
+    };
+
     navigator.mediaDevices
-      ?.getUserMedia({ audio: true, video: false })
+      ?.getUserMedia(audioConstraints)
       .then((stream) => {
         micStream = stream;
         audioCtx = new AudioContext();
@@ -548,17 +608,20 @@ export const App: React.FC = () => {
       micStream?.getTracks().forEach((t) => t.stop());
       audioCtx?.close().catch(() => {});
     };
-  }, [audioBuses]);
+  }, [audioBuses, globalSettings.micDeviceId]);
 
-  // Session Timer for Recording / Streaming
+  // Session Timer for Recording / Streaming (pauses when recording is paused)
   useEffect(() => {
-    if (!isRecordingNative && !isRecordingCanvas && !isStreaming) {
+    if (!isRecording && !isStreaming) {
       setSessionSeconds(0);
+      return;
+    }
+    if (isRecording && isRecordingPaused && !isStreaming) {
       return;
     }
     const id = setInterval(() => setSessionSeconds((s) => s + 1), 1000);
     return () => clearInterval(id);
-  }, [isRecordingNative, isRecordingCanvas, isStreaming]);
+  }, [isRecording, isRecordingPaused, isStreaming]);
 
   const formatTimer = (sec: number) => {
     const h = Math.floor(sec / 3600)
@@ -590,110 +653,144 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleAddSourceToEditableScene = (
-    type: SourceType,
-    name: string,
-    extra?: Partial<StageSource>
-  ) => {
-    const maxZ = editableScene.sources.reduce(
-      (max, s) => Math.max(max, s.zOrder),
-      0
-    );
-    const newSource = createDefaultSource(type, name, maxZ + 1, extra);
-    setScenes((prev) =>
-      prev.map((sc) =>
-        sc.id === editableScene.id
-          ? { ...sc, sources: [...sc.sources, newSource] }
-          : sc
-      )
-    );
-    setSelectedSourceId(newSource.id);
-    setShowAddSourceMenu(false);
-
-    if (
-      type === "window" ||
-      type === "text" ||
-      type === "lower_third" ||
-      type === "color"
-    ) {
-      setInspectorTarget({ source: newSource, sceneId: editableScene.id });
-    }
-  };
-
-  // Native Desktop Recording Toggle
-  const handleToggleNativeRecording = async () => {
-    try {
-      if (!isRecordingNative) {
-        const path = await invoke<string>("start_recording");
-        setIsRecordingNative(true);
-        showToast(`🔴 Grabando MP4 Nativo en: ${path}`);
-      } else {
-        const savedPath = await invoke<string>("stop_recording");
-        setIsRecordingNative(false);
-        showToast(`✅ Grabación MP4 finalizada y guardada: ${savedPath}`);
-      }
-    } catch (e) {
-      showToast(`Error de grabación: ${String(e)}`);
-    }
-  };
-
-  // Composed Stage Canvas Recording Toggle (Records Scene + Webcam PIP + Lower Thirds + Filters + Whiteboard)
-  const handleToggleComposedCanvasRecording = async () => {
-    if (!isRecordingCanvas) {
-      const canvas = pgmCanvasRef.current;
-      if (!canvas) return;
-      try {
-        const stream = canvas.captureStream(60);
-        const mimeType = MediaRecorder.isTypeSupported(
-          "video/webm;codecs=vp9"
+  const handleAddSourceToEditableScene = useCallback(
+    (type: SourceType, name: string, extra?: Partial<StageSource>) => {
+      const maxZ = editableScene.sources.reduce(
+        (max, s) => Math.max(max, s.zOrder),
+        0
+      );
+      const newSource = createDefaultSource(type, name, maxZ + 1, extra);
+      setScenes((prev) =>
+        prev.map((sc) =>
+          sc.id === editableScene.id
+            ? { ...sc, sources: [...sc.sources, newSource] }
+            : sc
         )
-          ? "video/webm;codecs=vp9"
-          : "video/webm";
-        const recorder = new MediaRecorder(stream, {
-          mimeType,
-          videoBitsPerSecond: 8_000_000,
-        });
-        canvasChunksRef.current = [];
-        recorder.ondataavailable = (ev) => {
-          if (ev.data && ev.data.size > 0) {
-            canvasChunksRef.current.push(ev.data);
-          }
-        };
-        recorder.onstop = async () => {
-          const blob = new Blob(canvasChunksRef.current, { type: mimeType });
-          const arrayBuf = await blob.arrayBuffer();
-          const uint8 = Array.from(new Uint8Array(arrayBuf));
-          showToast(
-            "⏳ Codificando Lienzo Compuesto a MP4 H.264 (+faststart)..."
-          );
-          try {
-            const finalMp4 = await invoke<string>(
-              "save_composed_canvas_recording",
-              { bytes: uint8 }
+      );
+      setSelectedSourceId(newSource.id);
+
+      if (
+        type === "window" ||
+        type === "text" ||
+        type === "lower_third" ||
+        type === "color"
+      ) {
+        setInspectorTarget({ source: newSource, sceneId: editableScene.id });
+      }
+    },
+    [editableScene]
+  );
+
+  // UNIFIED MASTER RECORDING BUTTON (Supports Composed Canvas MP4 or Native Desktop FFmpeg)
+  const handleToggleMasterRecord = useCallback(async () => {
+    if (!isRecording) {
+      const mode = globalSettings.recordingMode;
+      if (mode === "native_desktop") {
+        try {
+          const path = await invoke<string>("start_recording");
+          setActiveRecordingEngine("native_desktop");
+          setIsRecording(true);
+          setIsRecordingPaused(false);
+          showToast(`🔴 Grabando Pantalla Directa en: ${path}`);
+        } catch (e) {
+          showToast(`Error de grabación: ${String(e)}`);
+        }
+      } else {
+        // Default: Composed Stage Canvas Recording
+        const canvas = pgmCanvasRef.current;
+        if (!canvas) return;
+        try {
+          const stream = canvas.captureStream(globalSettings.fps || 60);
+          const mimeType = MediaRecorder.isTypeSupported(
+            "video/webm;codecs=vp9"
+          )
+            ? "video/webm;codecs=vp9"
+            : "video/webm";
+          const recorder = new MediaRecorder(stream, {
+            mimeType,
+            videoBitsPerSecond:
+              (globalSettings.recordingBitrateKbps || 12000) * 1000,
+          });
+          canvasChunksRef.current = [];
+          recorder.ondataavailable = (ev) => {
+            if (ev.data && ev.data.size > 0) {
+              canvasChunksRef.current.push(ev.data);
+            }
+          };
+          recorder.onstop = async () => {
+            const blob = new Blob(canvasChunksRef.current, { type: mimeType });
+            const arrayBuf = await blob.arrayBuffer();
+            const uint8 = Array.from(new Uint8Array(arrayBuf));
+            showToast(
+              "⏳ Finalizando y optimizando vídeo MP4 H.264 (+faststart)..."
             );
-            showToast(`✅ Vídeo del Lienzo Compuesto guardado: ${finalMp4}`);
-          } catch (err) {
-            showToast(`Error al codificar lienzo: ${String(err)}`);
-          }
-        };
-        recorder.start(250);
-        canvasRecorderRef.current = recorder;
-        setIsRecordingCanvas(true);
-        showToast(
-          "🔴 Grabando Lienzo Compuesto a 60 FPS (Escena + Cámara + Capas + Pizarra)..."
-        );
-      } catch (e) {
-        showToast(`Error al iniciar grabador de lienzo: ${String(e)}`);
+            try {
+              const finalMp4 = await invoke<string>(
+                "save_composed_canvas_recording",
+                { bytes: uint8 }
+              );
+              showToast(`✅ Grabación guardada en disco: ${finalMp4}`);
+            } catch (err) {
+              showToast(`Error al guardar MP4: ${String(err)}`);
+            }
+          };
+          recorder.start(250);
+          canvasRecorderRef.current = recorder;
+          setActiveRecordingEngine("composed_canvas");
+          setIsRecording(true);
+          setIsRecordingPaused(false);
+          showToast(
+            "🔴 Grabando Escena Compuesta en Vivo (Juego + Cámara + Capas)..."
+          );
+        } catch (e) {
+          showToast(`Error al iniciar grabación: ${String(e)}`);
+        }
       }
     } else {
-      canvasRecorderRef.current?.stop();
-      canvasRecorderRef.current = null;
-      setIsRecordingCanvas(false);
+      // Stop active recording
+      if (activeRecordingEngine === "native_desktop") {
+        try {
+          const savedPath = await invoke<string>("stop_recording");
+          setIsRecording(false);
+          setIsRecordingPaused(false);
+          setActiveRecordingEngine(null);
+          showToast(`✅ Grabación MP4 finalizada y guardada: ${savedPath}`);
+        } catch (e) {
+          showToast(`Error al detener grabación: ${String(e)}`);
+        }
+      } else {
+        canvasRecorderRef.current?.stop();
+        canvasRecorderRef.current = null;
+        setIsRecording(false);
+        setIsRecordingPaused(false);
+        setActiveRecordingEngine(null);
+      }
+    }
+  }, [isRecording, activeRecordingEngine, globalSettings, showToast]);
+
+  // Pause / Resume Recording
+  const handleTogglePauseRecording = () => {
+    if (!isRecording) return;
+    if (
+      activeRecordingEngine === "composed_canvas" &&
+      canvasRecorderRef.current
+    ) {
+      if (canvasRecorderRef.current.state === "recording") {
+        canvasRecorderRef.current.pause();
+        setIsRecordingPaused(true);
+        showToast("⏸️ Grabación en pausa");
+      } else if (canvasRecorderRef.current.state === "paused") {
+        canvasRecorderRef.current.resume();
+        setIsRecordingPaused(false);
+        showToast("▶️ Grabación reanudada");
+      }
+    } else {
+      setIsRecordingPaused((p) => !p);
     }
   };
 
-  // Instant Replay Trigger (Saves Replay MP4 & Injects/Updates Replay Layer on Stage)
-  const handleTriggerInstantReplay = async () => {
+  // Instant Replay Trigger
+  const handleTriggerInstantReplay = useCallback(async () => {
     try {
       showToast("⏪ Generando clip de Repetición Instantánea...");
       const replayPath = await invoke<string>("trigger_instant_replay", {
@@ -721,14 +818,14 @@ export const App: React.FC = () => {
           { mediaUrl: blobUrl, mediaLoop: true }
         );
       }
-      showToast(`✅ Repetición Instantánea guardada y en reproducción: ${replayPath}`);
+      showToast(`✅ Repetición Instantánea guardada: ${replayPath}`);
     } catch (e) {
       showToast(`Error en Repetición Instantánea: ${String(e)}`);
     }
-  };
+  }, [activeScene, handleAddSourceToEditableScene, showToast]);
 
   // Multistream Toggle
-  const handleToggleStream = async () => {
+  const handleToggleStream = useCallback(async () => {
     try {
       if (!isStreaming) {
         const enabledTargets = streamChannels
@@ -752,7 +849,86 @@ export const App: React.FC = () => {
     } catch (e) {
       showToast(`Aviso de Stream: ${String(e)}`);
     }
-  };
+  }, [isStreaming, streamChannels, showToast]);
+
+  // Take Screenshot
+  const handleTakeScreenshot = useCallback(async () => {
+    try {
+      const path = await invoke<string>("take_screenshot");
+      showToast(`📸 Captura PNG guardada en: ${path}`);
+    } catch (e) {
+      showToast(`Error en captura: ${String(e)}`);
+    }
+  }, [showToast]);
+
+  // Global Hotkeys Listener (F1..F8 Scenes, Record, Stream, Screenshot, Replay, Space Push Live)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      const parts: string[] = [];
+      if (e.ctrlKey) parts.push("Ctrl");
+      if (e.altKey) parts.push("Alt");
+      if (e.shiftKey) parts.push("Shift");
+      const keyName =
+        e.code === "Space"
+          ? "Space"
+          : e.key.length === 1
+          ? e.key.toUpperCase()
+          : e.key;
+      parts.push(keyName);
+      const combo = parts.join("+");
+
+      const hk = globalSettings.hotkeys;
+      const sceneKeys = [
+        hk.scene1,
+        hk.scene2,
+        hk.scene3,
+        hk.scene4,
+        hk.scene5,
+        hk.scene6,
+        hk.scene7,
+        hk.scene8,
+      ];
+      const scIdx = sceneKeys.indexOf(combo);
+      if (scIdx !== -1 && scenes[scIdx]) {
+        e.preventDefault();
+        switchToScene(scenes[scIdx].id);
+        return;
+      }
+
+      if (combo === hk.toggleRecord) {
+        e.preventDefault();
+        handleToggleMasterRecord();
+      } else if (combo === hk.toggleStream) {
+        e.preventDefault();
+        handleToggleStream();
+      } else if (combo === hk.takeScreenshot) {
+        e.preventDefault();
+        handleTakeScreenshot();
+      } else if (combo === hk.instantReplay) {
+        e.preventDefault();
+        handleTriggerInstantReplay();
+      } else if (combo === hk.pushLive && studioMode) {
+        e.preventDefault();
+        switchToScene(previewScene.id);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    globalSettings.hotkeys,
+    scenes,
+    studioMode,
+    previewScene.id,
+    switchToScene,
+    handleToggleMasterRecord,
+    handleToggleStream,
+    handleTakeScreenshot,
+    handleTriggerInstantReplay,
+  ]);
 
   // Fullscreen Projector Toggle
   const handleToggleFullscreenProjector = async () => {
@@ -779,6 +955,7 @@ export const App: React.FC = () => {
           activeSceneId,
           activeTransition,
           transitionDurationMs,
+          globalSettings,
           scenes,
           audioBuses,
           autoSceneRules,
@@ -813,6 +990,15 @@ export const App: React.FC = () => {
     }
   };
 
+  const openGlobalSettingsAt = (tab: SettingsTabId) => {
+    setSettingsInitialTab(tab);
+    setSettingsModalOpen(true);
+  };
+
+  const selectedSourceObj = editableScene.sources.find(
+    (s) => s.id === selectedSourceId
+  );
+
   return (
     <div
       className="h-screen w-screen flex flex-col bg-[#07090E] text-slate-100 overflow-hidden select-none"
@@ -846,18 +1032,22 @@ export const App: React.FC = () => {
           const file = e.target.files?.[0];
           if (file) {
             const url = URL.createObjectURL(file);
-            handleAddSourceToEditableScene("media", `Multimedia: ${file.name}`, {
-              mediaUrl: url,
-              mediaLoop: true,
-            });
+            handleAddSourceToEditableScene(
+              "media",
+              `Multimedia: ${file.name}`,
+              {
+                mediaUrl: url,
+                mediaLoop: true,
+              }
+            );
           }
           e.target.value = "";
         }}
       />
 
-      {/* TOP BROADCASTER MENU BAR & MASTER CONTROLS */}
+      {/* TOP BROADCASTER MENU BAR & UNIFIED MASTER CONTROLS */}
       <header className="h-13 px-3.5 bg-[#0B0E17] border-b border-slate-800/90 flex items-center justify-between shrink-0 z-30">
-        {/* Left: Brand Logo + Classic XSplit Broadcaster Top Menus */}
+        {/* Left: Brand Logo + Ordered Studio Menus: Archivo, Editar, Vista, Herramientas y Plugins, Configuración (⚙️) */}
         <div className="flex items-center gap-5">
           <GamecasterLogo size={32} showText={true} />
 
@@ -871,107 +1061,70 @@ export const App: React.FC = () => {
                 label: "Archivo",
                 items: [
                   {
-                    label: "Nueva Presentación en Blanco",
+                    label: "✨ Nueva Presentación Limpia (4 Escenas Base)",
                     action: () => {
                       setScenes(INITIAL_SCENES);
                       setActiveSceneId("scene_1");
-                      showToast("✨ Presentación restablecida");
+                      showToast(
+                        "✨ Escenas por defecto limpias restablecidas"
+                      );
                     },
                   },
                   {
-                    label: "Guardar Presentación (.bpres)",
+                    label: "💾 Guardar Presentación (.bpres)",
                     action: handleSaveBpres,
                   },
                   {
-                    label: "Cargar Presentación (.bpres)",
+                    label: "📂 Cargar Presentación (.bpres)",
                     action: handleLoadBpres,
                   },
                   {
-                    label: "Abrir Carpeta de Grabaciones en Windows",
+                    label: "📁 Abrir Carpeta de Vídeos en Windows",
                     action: () =>
                       invoke("open_media_folder", { sub: "recordings" }),
                   },
                 ],
               },
               {
-                id: "transmision",
-                label: "Transmisión",
+                id: "editar",
+                label: "Editar",
                 items: [
                   {
-                    label: "Configurar Canales Multistream y Chat IRC...",
-                    action: () => setActiveStudioModal("multistream"),
+                    label:
+                      "⚙️ Propiedades de la Fuente Seleccionada...",
+                    action: () => {
+                      if (selectedSourceObj) {
+                        setInspectorTarget({
+                          source: selectedSourceObj,
+                          sceneId: editableScene.id,
+                        });
+                      } else {
+                        showToast(
+                          "Selecciona primero una fuente en la escena"
+                        );
+                      }
+                    },
                   },
                   {
-                    label: isStreaming
-                      ? "⏹️ Detener Emisión en Directo"
-                      : "📡 Iniciar Emisión en Directo",
-                    action: handleToggleStream,
-                  },
-                ],
-              },
-              {
-                id: "grabacion",
-                label: "Grabación",
-                items: [
-                  {
-                    label: isRecordingNative
-                      ? "⏹️ Detener Grabación de Escritorio (MP4)"
-                      : "🔴 Iniciar Grabación de Escritorio (MP4)",
-                    action: handleToggleNativeRecording,
-                  },
-                  {
-                    label: isRecordingCanvas
-                      ? "⏹️ Detener Grabación de Lienzo Compuesto"
-                      : "🎬 Grabar Lienzo Compuesto (Escena + Cámara + Capas)",
-                    action: handleToggleComposedCanvasRecording,
-                  },
-                  {
-                    label: "Gestor de Grabaciones y Express Video Editor...",
-                    action: () => setActiveStudioModal("recordings"),
-                  },
-                ],
-              },
-              {
-                id: "salidas",
-                label: "Salidas",
-                items: [
-                  {
-                    label: "Proyector a Pantalla Completa (Sin Bordes)",
-                    action: handleToggleFullscreenProjector,
-                  },
-                  {
-                    label: "Panel de Cámara Virtual y Salida NDI®...",
-                    action: () => setActiveStudioModal("outputs"),
-                  },
-                ],
-              },
-              {
-                id: "plugins",
-                label: "Extensiones Pro (7 Integradas)",
-                items: [
-                  {
-                    label: "1. Cambiador Automático de Escenas (Auto Switcher)",
-                    action: () => setActiveStudioModal("auto_switcher"),
-                  },
-                  {
-                    label: "2. Estudio de Tercios Inferiores (Lower Thirds)",
+                    label: "📺 Editar Tercios Inferiores (Lower Thirds)...",
                     action: () => setActiveStudioModal("lower_thirds"),
                   },
                   {
-                    label: "3. Gestor de Reglas de Transición y Stingers",
-                    action: () => setActiveStudioModal("transition_manager"),
-                  },
-                  {
-                    label: "4. Disparar Repetición Instantánea (Instant Replay)",
-                    action: handleTriggerInstantReplay,
-                  },
-                  {
-                    label: "5. Express Video Editor & Reparador MP4",
-                    action: () => setActiveStudioModal("recordings"),
-                  },
-                  {
-                    label: "6. Multistreaming & Chat Unificado Twitch IRC",
-                    action: () => setActiveStudioModal("multistream"),
+                    label: "🔄 Restablecer Posición de Capa a Pantalla Completa",
+                    action: () => {
+                      if (selectedSourceObj) {
+                        handleUpdateSource(editableScene.id, {
+                          ...selectedSourceObj,
+                          layout: {
+                            ...selectedSourceObj.layout,
+                            x: 0,
+                            y: 0,
+                            width: isPortraitCanvas ? 1080 : 1920,
+                            height: isPortraitCanvas ? 1920 : 1080,
+                          },
+                        });
+                      }
+                    },
                   },
                 ],
               },
@@ -979,6 +1132,26 @@ export const App: React.FC = () => {
                 id: "vista",
                 label: "Vista",
                 items: [
+                  {
+                    label: globalSettings.excludeFromCapture
+                      ? "✅ Ocultar Gamecaster Plus al Capturar Pantalla (Sin Espejo)"
+                      : "⬜ Ocultar Gamecaster Plus al Capturar Pantalla (Sin Espejo)",
+                    action: async () => {
+                      const next = !globalSettings.excludeFromCapture;
+                      setGlobalSettings((g) => ({
+                        ...g,
+                        excludeFromCapture: next,
+                      }));
+                      await invoke("set_exclude_from_capture", {
+                        exclude: next,
+                      }).catch(() => {});
+                      showToast(
+                        next
+                          ? "🛡️ Efecto espejo desactivado (Ventana excluida de la captura)"
+                          : "👁️ Ventana incluida en la captura de pantalla"
+                      );
+                    },
+                  },
                   {
                     label: studioMode
                       ? "Desactivar Modo Estudio (Vista Única PGM)"
@@ -989,7 +1162,74 @@ export const App: React.FC = () => {
                     label: isPortraitCanvas
                       ? "Cambiar a Lienzo Horizontal 16:9 (1920×1080)"
                       : "Cambiar a Lienzo Vertical 9:16 (1080×1920 TikTok/Shorts)",
-                    action: () => setIsPortraitCanvas((v) => !v),
+                    action: () =>
+                      setGlobalSettings((g) => ({
+                        ...g,
+                        outputResolution:
+                          g.outputResolution === "1080x1920"
+                            ? "1920x1080"
+                            : "1080x1920",
+                      })),
+                  },
+                  {
+                    label: "🖥️ Proyector a Pantalla Completa (Sin Bordes)",
+                    action: handleToggleFullscreenProjector,
+                  },
+                ],
+              },
+              {
+                id: "herramientas",
+                label: "Herramientas y Plugins",
+                items: [
+                  {
+                    label: "🎬 Gestor de Grabaciones y Express Video Editor...",
+                    action: () => setActiveStudioModal("recordings"),
+                  },
+                  {
+                    label: "🤖 Cambiador Automático de Escenas (Auto Switcher)...",
+                    action: () => setActiveStudioModal("auto_switcher"),
+                  },
+                  {
+                    label: "📺 Estudio de Tercios Inferiores (Lower Thirds)...",
+                    action: () => setActiveStudioModal("lower_thirds"),
+                  },
+                  {
+                    label: "⚡ Gestor de Reglas de Transición y Stingers...",
+                    action: () => setActiveStudioModal("transition_manager"),
+                  },
+                  {
+                    label: "📡 Salida de Cámara Virtual y NDI®...",
+                    action: () => setActiveStudioModal("outputs"),
+                  },
+                ],
+              },
+              {
+                id: "configuracion",
+                label: "Configuración ⚙️",
+                items: [
+                  {
+                    label: "1. ⚙️ Ajustes Generales y Anti-Espejo...",
+                    action: () => openGlobalSettingsAt("general"),
+                  },
+                  {
+                    label: "2. 🖥️ Vídeo, Resolución y Lienzo (1080p/2K/4K/60FPS)...",
+                    action: () => openGlobalSettingsAt("video"),
+                  },
+                  {
+                    label: "3. 🎚️ Audio, Micrófono y Supresión de Ruido IA...",
+                    action: () => openGlobalSettingsAt("audio"),
+                  },
+                  {
+                    label: "4. 🔴 Motor de Grabación, NVENC y Carpeta...",
+                    action: () => openGlobalSettingsAt("recording"),
+                  },
+                  {
+                    label: "5. 📡 Cuentas de Transmisión (Twitch/YouTube/Kick)...",
+                    action: () => openGlobalSettingsAt("streaming"),
+                  },
+                  {
+                    label: "6. ⌨️ Atajos de Teclado Globales (Hotkeys)...",
+                    action: () => openGlobalSettingsAt("hotkeys"),
                   },
                 ],
               },
@@ -999,7 +1239,7 @@ export const App: React.FC = () => {
                   onClick={() =>
                     setOpenMenu(openMenu === menu.id ? null : menu.id)
                   }
-                  className={`px-2.5 py-1.5 rounded font-medium transition ${
+                  className={`px-2.5 py-1.5 rounded-lg font-medium transition ${
                     openMenu === menu.id
                       ? "bg-slate-800 text-[#00F0FF]"
                       : "text-slate-300 hover:text-white hover:bg-slate-900"
@@ -1008,7 +1248,7 @@ export const App: React.FC = () => {
                   {menu.label}
                 </button>
                 {openMenu === menu.id && (
-                  <div className="absolute left-0 top-full mt-1 w-72 rounded-lg bg-[#101522] border border-slate-700 shadow-2xl py-1.5 z-50">
+                  <div className="absolute left-0 top-full mt-1 w-80 rounded-xl bg-[#101522] border border-slate-700 shadow-2xl py-1.5 z-50">
                     {menu.items.map((item, idx) => (
                       <button
                         key={idx}
@@ -1028,7 +1268,7 @@ export const App: React.FC = () => {
           </nav>
         </div>
 
-        {/* Center/Right: Master Action Buttons & Hardware Telemetry */}
+        {/* Right: Clean Unified Master Controls & Telemetry */}
         <div className="flex items-center gap-2">
           {/* Studio Mode Toggle (`SplitView`) */}
           <button
@@ -1041,25 +1281,33 @@ export const App: React.FC = () => {
             title="Conmutar Modo Estudio (Editor de Vista Previa + Programa en Vivo)"
           >
             <Columns className="w-3.5 h-3.5" />
-            Modo Estudio
+            <span>Modo Estudio</span>
           </button>
 
           {/* 16:9 vs 9:16 Portrait Toggle */}
           <button
-            onClick={() => setIsPortraitCanvas((v) => !v)}
+            onClick={() =>
+              setGlobalSettings((g) => ({
+                ...g,
+                outputResolution:
+                  g.outputResolution === "1080x1920"
+                    ? "1920x1080"
+                    : "1080x1920",
+              }))
+            }
             className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition ${
               isPortraitCanvas
                 ? "bg-purple-500/20 border-purple-400 text-purple-300"
                 : "bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700"
             }`}
-            title="Alternar relación de aspecto 16:9 Horizontal vs 9:16 Vertical"
+            title="Alternar formato Horizontal 16:9 vs Vertical 9:16"
           >
             {isPortraitCanvas ? (
               <Smartphone className="w-3.5 h-3.5" />
             ) : (
               <Monitor className="w-3.5 h-3.5" />
             )}
-            {isPortraitCanvas ? "9:16" : "16:9"}
+            <span>{isPortraitCanvas ? "9:16" : "16:9"}</span>
           </button>
 
           {/* Stream Button */}
@@ -1070,81 +1318,88 @@ export const App: React.FC = () => {
                 ? "bg-rose-600 text-white animate-pulse shadow-[0_0_15px_rgba(225,29,72,0.6)]"
                 : "bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700"
             }`}
+            title="Iniciar o detener transmisión en directo (Ctrl+F12)"
           >
             <Radio className="w-3.5 h-3.5 text-[#00F0FF]" />
-            {isStreaming ? "EN DIRECTO" : "Transmitir"}
+            <span>{isStreaming ? "EN DIRECTO" : "Transmitir"}</span>
           </button>
 
-          {/* Native Desktop Record Button */}
-          <button
-            onClick={handleToggleNativeRecording}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-              isRecordingNative
-                ? "bg-rose-600 text-white shadow-[0_0_15px_rgba(225,29,72,0.6)]"
-                : "bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/40"
-            }`}
-            title="Grabación nativa FFmpeg gdigrab en MP4"
-          >
-            <CircleDot className="w-3.5 h-3.5" />
-            {isRecordingNative ? "Parar MP4" : "Grabar MP4"}
-          </button>
+          {/* ONE SINGLE UNIFIED RECORD BUTTON + PAUSE + TIMER */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleToggleMasterRecord}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition ${
+                isRecording
+                  ? "bg-rose-600 text-white shadow-[0_0_16px_rgba(225,29,72,0.65)]"
+                  : "bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/40"
+              }`}
+              title="Iniciar o detener grabación de vídeo MP4 (Ctrl+F11)"
+            >
+              <CircleDot
+                className={`w-3.5 h-3.5 ${
+                  isRecording && !isRecordingPaused ? "animate-ping" : ""
+                }`}
+              />
+              <span>
+                {isRecording
+                  ? `Detener (${formatTimer(sessionSeconds)})`
+                  : "Grabar"}
+              </span>
+            </button>
 
-          {/* Composed Stage Canvas Record Button */}
-          <button
-            onClick={handleToggleComposedCanvasRecording}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-              isRecordingCanvas
-                ? "bg-amber-500 text-slate-950 shadow-[0_0_15px_rgba(245,158,11,0.6)]"
-                : "bg-[#00F0FF]/15 hover:bg-[#00F0FF]/25 text-[#00F0FF] border border-[#00F0FF]/40"
-            }`}
-            title="Graba el lienzo compuesto a 60 FPS (incluyendo cámara PIP, textos, filtros y pizarra) en un MP4 final"
-          >
-            <Layers className="w-3.5 h-3.5" />
-            {isRecordingCanvas ? "Guardar Lienzo MP4" : "Grabar Lienzo"}
-          </button>
+            {isRecording && (
+              <button
+                onClick={handleTogglePauseRecording}
+                className={`p-1.5 rounded-lg border text-xs font-bold transition ${
+                  isRecordingPaused
+                    ? "bg-amber-500 text-slate-950 border-amber-400"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                }`}
+                title={
+                  isRecordingPaused
+                    ? "Reanudar grabación"
+                    : "Pausar grabación"
+                }
+              >
+                {isRecordingPaused ? (
+                  <Play className="w-3.5 h-3.5" />
+                ) : (
+                  <Pause className="w-3.5 h-3.5" />
+                )}
+              </button>
+            )}
+          </div>
 
           {/* Instant Replay Button */}
           <button
             onClick={handleTriggerInstantReplay}
             className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold"
-            title="Guardar y reproducir Repetición Instantánea en escena"
+            title="Guardar clip de Repetición Instantánea (Ctrl+F10)"
           >
             <RotateCcw className="w-3.5 h-3.5 text-emerald-400" />
-            Replay
+            <span>Replay</span>
           </button>
 
           {/* Screenshot Button */}
           <button
-            onClick={async () => {
-              try {
-                const path = await invoke<string>("take_screenshot");
-                showToast(`📸 Captura PNG guardada en: ${path}`);
-              } catch (e) {
-                showToast(`Error en captura: ${String(e)}`);
-              }
-            }}
+            onClick={handleTakeScreenshot}
             className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
-            title="Tomar captura de pantalla PNG sin compresión"
+            title="Tomar captura de pantalla PNG (Ctrl+F9)"
           >
             <Camera className="w-4 h-4 text-[#00F0FF]" />
           </button>
 
-          {/* Recordings Gallery Shortcut */}
+          {/* Direct Global Settings Button (⚙️) */}
           <button
-            onClick={() => setActiveStudioModal("recordings")}
-            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
-            title="Abrir Gestor de Grabaciones y Express Video Editor"
+            onClick={() => openGlobalSettingsAt("general")}
+            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[#00F0FF] border border-slate-700"
+            title="Abrir Centro de Configuración Global (Vídeo, Audio, Grabación, Cuentas, Atajos)"
           >
-            <Film className="w-4 h-4 text-amber-400" />
+            <Settings className="w-4 h-4" />
           </button>
 
           {/* Live Telemetry Pill */}
           <div className="hidden xl:flex items-center gap-2.5 ml-1 px-3 py-1 rounded-lg bg-[#070A12] border border-slate-800 font-mono text-[11px]">
-            {(isRecordingNative || isRecordingCanvas || isStreaming) && (
-              <span className="text-rose-400 font-bold">
-                ● {formatTimer(sessionSeconds)}
-              </span>
-            )}
             <span className="flex items-center gap-1 text-slate-300">
               <Cpu className="w-3 h-3 text-[#00F0FF]" />
               {telemetry.cpu_usage_percent.toFixed(1)}%
@@ -1177,7 +1432,9 @@ export const App: React.FC = () => {
         studioMode={studioMode}
         isPortraitCanvas={isPortraitCanvas}
         snapToGrid={snapToGrid}
-        onToggleSnapToGrid={() => setSnapToGrid((v) => !v)}
+        onToggleSnapToGrid={() =>
+          setGlobalSettings((g) => ({ ...g, snapToGrid: !g.snapToGrid }))
+        }
         selectedSourceId={selectedSourceId}
         onSelectSource={setSelectedSourceId}
         onUpdateSource={handleUpdateSource}
@@ -1193,650 +1450,92 @@ export const App: React.FC = () => {
         pgmCanvasRef={pgmCanvasRef}
       />
 
-      {/* BOTTOM 3-COLUMN XSPLIT BROADCASTER STUDIO DOCK */}
+      {/* BOTTOM 3-COLUMN MODULAR STUDIO DOCK */}
       <section className="h-[275px] bg-[#0B0E17] grid grid-cols-12 divide-x divide-slate-800/90 shrink-0 text-xs">
-        {/* COLUMN 1 (LEFT): SCENE SOURCES (`Fuentes de la Escena`) */}
-        <div className="col-span-4 flex flex-col h-full overflow-hidden">
-          <div className="px-3 py-2 bg-[#101522] border-b border-slate-800 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Layers className="w-3.5 h-3.5 text-[#00F0FF]" />
-              <span className="font-display font-bold uppercase tracking-wider text-white">
-                Fuentes — {editableScene.name}
-              </span>
-            </div>
-
-            <div className="relative">
-              <button
-                onClick={() => setShowAddSourceMenu((v) => !v)}
-                className="flex items-center gap-1 px-2.5 py-1 rounded bg-[#00F0FF] text-slate-950 font-bold hover:brightness-110 transition"
-              >
-                <Plus className="w-3.5 h-3.5" /> Añadir Fuente
-              </button>
-
-              {showAddSourceMenu && (
-                <div className="absolute right-0 bottom-full mb-1.5 w-64 rounded-xl bg-[#101522] border border-slate-700 shadow-2xl py-1.5 z-50">
-                  {[
-                    {
-                      label: "🖥️ Captura de Pantalla / Monitor",
-                      action: () =>
-                        handleAddSourceToEditableScene(
-                          "screen",
-                          "Captura de Monitor"
-                        ),
-                    },
-                    {
-                      label: "🎮 Captura de Juego / Ventana...",
-                      action: () => {
-                        refreshOpenWindows();
-                        handleAddSourceToEditableScene(
-                          "window",
-                          "Captura de Juego / Ventana",
-                          {
-                            windowHwnd: openWindows[0]?.hwnd || 0,
-                            windowTitle:
-                              openWindows[0]?.title || "Ventana de Juego",
-                          }
-                        );
-                      },
-                    },
-                    {
-                      label: "📷 Cámara Web / Capturadora UVC",
-                      action: () =>
-                        handleAddSourceToEditableScene(
-                          "camera",
-                          "Cámara Web PIP"
-                        ),
-                    },
-                    {
-                      label: "📺 Tercio Inferior Animado (Lower Third)",
-                      action: () =>
-                        handleAddSourceToEditableScene(
-                          "lower_third",
-                          "Tercio Inferior Broadcast"
-                        ),
-                    },
-                    {
-                      label: "🔤 Texto / Rótulo Personalizado",
-                      action: () =>
-                        handleAddSourceToEditableScene(
-                          "text",
-                          "Rótulo en Directo"
-                        ),
-                    },
-                    {
-                      label: "🖼️ Imagen / Marca de Agua (Disco)...",
-                      action: () => {
-                        setShowAddSourceMenu(false);
-                        fileInputImageRef.current?.click();
-                      },
-                    },
-                    {
-                      label: "🎬 Vídeo / Archivo Multimedia (Disco)...",
-                      action: () => {
-                        setShowAddSourceMenu(false);
-                        fileInputMediaRef.current?.click();
-                      },
-                    },
-                    {
-                      label: "🎨 Fondo de Color / Degradado",
-                      action: () =>
-                        handleAddSourceToEditableScene(
-                          "color",
-                          "Fondo Degradado"
-                        ),
-                    },
-                    {
-                      label: "⏪ Fuente de Repetición Instantánea",
-                      action: handleTriggerInstantReplay,
-                    },
-                  ].map((item, idx) => (
-                    <button
-                      key={idx}
-                      onClick={item.action}
-                      className="w-full px-3.5 py-2 text-left text-xs text-slate-200 hover:bg-[#00F0FF]/15 hover:text-[#00F0FF] transition"
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Sources List (Top Z-Order first) */}
-          <div className="flex-1 overflow-y-auto divide-y divide-slate-800/60">
-            {[...editableScene.sources]
-              .sort((a, b) => b.zOrder - a.zOrder)
-              .map((src) => {
-                const isSel = src.id === selectedSourceId;
-                return (
-                  <div
-                    key={src.id}
-                    onClick={() => setSelectedSourceId(src.id)}
-                    onDoubleClick={() =>
-                      setInspectorTarget({
-                        source: src,
-                        sceneId: editableScene.id,
-                      })
+        {/* COLUMN 1: SCENE SOURCES */}
+        <SourcesPanel
+          editableScene={editableScene}
+          selectedSourceId={selectedSourceId}
+          onSelectSource={setSelectedSourceId}
+          onUpdateSource={handleUpdateSource}
+          onAddSource={handleAddSourceToEditableScene}
+          onOpenProperties={(source, sceneId) =>
+            setInspectorTarget({ source, sceneId })
+          }
+          onDeleteSource={(sourceId) =>
+            setScenes((prev) =>
+              prev.map((sc) =>
+                sc.id === editableScene.id
+                  ? {
+                      ...sc,
+                      sources: sc.sources.filter((i) => i.id !== sourceId),
                     }
-                    className={`px-3 py-2 flex items-center justify-between cursor-pointer transition ${
-                      isSel
-                        ? "bg-[#00F0FF]/15 text-white"
-                        : "hover:bg-slate-900/70 text-slate-300"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleUpdateSource(editableScene.id, {
-                            ...src,
-                            layout: {
-                              ...src.layout,
-                              visible: !src.layout.visible,
-                            },
-                          });
-                        }}
-                        className={`p-1 rounded ${
-                          src.layout.visible
-                            ? "text-[#00F0FF]"
-                            : "text-slate-600"
-                        }`}
-                        title="Mostrar / Ocultar fuente en el lienzo"
-                      >
-                        {src.layout.visible ? (
-                          <Eye className="w-3.5 h-3.5" />
-                        ) : (
-                          <EyeOff className="w-3.5 h-3.5" />
-                        )}
-                      </button>
+                  : sc
+              )
+            )
+          }
+          onDuplicateSource={(src) => {
+            const clone: StageSource = {
+              ...JSON.parse(JSON.stringify(src)),
+              id: `src_${Date.now()}`,
+              name: `${src.name} (Copia)`,
+              zOrder: src.zOrder + 1,
+            };
+            clone.layout.x += 40;
+            clone.layout.y += 40;
+            setScenes((prev) =>
+              prev.map((sc) =>
+                sc.id === editableScene.id
+                  ? { ...sc, sources: [...sc.sources, clone] }
+                  : sc
+              )
+            );
+          }}
+          onTriggerInstantReplay={handleTriggerInstantReplay}
+          onPickImageFile={() => fileInputImageRef.current?.click()}
+          onPickMediaFile={() => fileInputMediaRef.current?.click()}
+          openWindows={openWindows}
+          onRefreshWindows={refreshOpenWindows}
+        />
 
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleUpdateSource(editableScene.id, {
-                            ...src,
-                            layout: {
-                              ...src.layout,
-                              lockPosition: !src.layout.lockPosition,
-                            },
-                          });
-                        }}
-                        className={`p-1 rounded ${
-                          src.layout.lockPosition
-                            ? "text-amber-400"
-                            : "text-slate-500 hover:text-slate-300"
-                        }`}
-                        title="Bloquear / Desbloquear posición con el ratón"
-                      >
-                        {src.layout.lockPosition ? (
-                          <Lock className="w-3.5 h-3.5" />
-                        ) : (
-                          <Unlock className="w-3.5 h-3.5" />
-                        )}
-                      </button>
+        {/* COLUMN 2: SCENE MATRIX & TRANSITIONS */}
+        <ScenesGridPanel
+          scenes={scenes}
+          activeSceneId={activeSceneId}
+          previewSceneId={previewSceneId}
+          studioMode={studioMode}
+          onSelectScene={(sceneId) => {
+            if (studioMode) {
+              setPreviewSceneId(sceneId);
+            } else {
+              switchToScene(sceneId);
+            }
+          }}
+          onPushSceneLive={switchToScene}
+          onUpdateScenes={setScenes}
+          activeTransition={activeTransition}
+          onChangeTransition={setActiveTransition}
+          transitionDurationMs={transitionDurationMs}
+          onChangeTransitionDuration={setTransitionDurationMs}
+          onOpenTransitionRulesModal={() =>
+            setActiveStudioModal("transition_manager")
+          }
+        />
 
-                      <span className="truncate font-medium">{src.name}</span>
-                      {src.effects.shader !== "none" && (
-                        <span className="px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 text-[9px] font-mono uppercase">
-                          {src.effects.shader}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Row Controls: Z-Order Up/Down, Duplicate, Properties, Delete */}
-                    <div
-                      className="flex items-center gap-0.5 shrink-0"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <button
-                        onClick={() =>
-                          handleUpdateSource(editableScene.id, {
-                            ...src,
-                            zOrder: src.zOrder + 2,
-                          })
-                        }
-                        className="p-1 text-slate-400 hover:text-white"
-                        title="Subir capa (Z-Order)"
-                      >
-                        <ChevronUp className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() =>
-                          handleUpdateSource(editableScene.id, {
-                            ...src,
-                            zOrder: Math.max(0, src.zOrder - 2),
-                          })
-                        }
-                        className="p-1 text-slate-400 hover:text-white"
-                        title="Bajar capa (Z-Order)"
-                      >
-                        <ChevronDown className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => {
-                          const clone: StageSource = {
-                            ...JSON.parse(JSON.stringify(src)),
-                            id: `src_${Date.now()}`,
-                            name: `${src.name} (Copia)`,
-                            zOrder: src.zOrder + 1,
-                          };
-                          clone.layout.x += 40;
-                          clone.layout.y += 40;
-                          setScenes((prev) =>
-                            prev.map((sc) =>
-                              sc.id === editableScene.id
-                                ? { ...sc, sources: [...sc.sources, clone] }
-                                : sc
-                            )
-                          );
-                        }}
-                        className="p-1 text-slate-400 hover:text-white"
-                        title="Duplicar fuente"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() =>
-                          setInspectorTarget({
-                            source: src,
-                            sceneId: editableScene.id,
-                          })
-                        }
-                        className="p-1 text-[#00F0FF] hover:brightness-125"
-                        title="Abrir Inspector de Propiedades (Layout, Chroma Key, 14 Shaders)"
-                      >
-                        <Settings className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() =>
-                          setScenes((prev) =>
-                            prev.map((sc) =>
-                              sc.id === editableScene.id
-                                ? {
-                                    ...sc,
-                                    sources: sc.sources.filter(
-                                      (item) => item.id !== src.id
-                                    ),
-                                  }
-                                : sc
-                            )
-                          )
-                        }
-                        className="p-1 text-slate-500 hover:text-rose-400"
-                        title="Eliminar fuente"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-          </div>
-        </div>
-
-        {/* COLUMN 2 (CENTER): UNLIMITED SCENE MATRIX (`Escenas`) & 15 GPU TRANSITIONS */}
-        <div className="col-span-4 flex flex-col h-full overflow-hidden">
-          <div className="px-3 py-2 bg-[#101522] border-b border-slate-800 flex items-center justify-between">
-            <span className="font-display font-bold uppercase tracking-wider text-white">
-              Matriz de Escenas ({scenes.length} Ilimitadas)
-            </span>
-            <button
-              onClick={() => {
-                const idx = scenes.length + 1;
-                const newSc: Scene = {
-                  id: `scene_${Date.now()}`,
-                  name: `Escena ${idx}: Personalizada`,
-                  sources: [
-                    createDefaultSource("screen", "Captura de Monitor", 1),
-                  ],
-                };
-                setScenes((prev) => [...prev, newSc]);
-                switchToScene(newSc.id);
-              }}
-              className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[#00F0FF] font-semibold"
-            >
-              <Plus className="w-3.5 h-3.5" /> Nueva Escena
-            </button>
-          </div>
-
-          {/* Scene Grid */}
-          <div className="flex-1 p-2.5 overflow-y-auto grid grid-cols-2 gap-2">
-            {scenes.map((sc, idx) => {
-              const isLive = sc.id === activeSceneId;
-              const isPrev = studioMode && sc.id === previewSceneId;
-              return (
-                <div
-                  key={sc.id}
-                  onClick={() => {
-                    if (studioMode) {
-                      setPreviewSceneId(sc.id);
-                    } else {
-                      switchToScene(sc.id);
-                    }
-                  }}
-                  className={`p-2.5 rounded-lg border cursor-pointer flex flex-col justify-between transition ${
-                    isLive
-                      ? "bg-rose-500/15 border-rose-500 shadow-[0_0_12px_rgba(244,63,94,0.25)]"
-                      : isPrev
-                      ? "bg-amber-500/15 border-amber-400"
-                      : "bg-[#101626] border-slate-800 hover:border-slate-700"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-900 text-slate-400">
-                      F{idx + 1}
-                    </span>
-                    <div className="flex items-center gap-1">
-                      {isLive && (
-                        <span className="px-1.5 py-0.5 rounded bg-rose-600 text-white font-bold text-[9px] uppercase">
-                          LIVE
-                        </span>
-                      )}
-                      {isPrev && (
-                        <span className="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-bold text-[9px] uppercase">
-                          PREVIEW
-                        </span>
-                      )}
-                      {scenes.length > 1 && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const remaining = scenes.filter(
-                              (item) => item.id !== sc.id
-                            );
-                            setScenes(remaining);
-                            if (activeSceneId === sc.id) {
-                              setActiveSceneId(remaining[0].id);
-                            }
-                          }}
-                          className="text-slate-500 hover:text-rose-400 p-0.5"
-                          title="Eliminar escena"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="font-semibold text-white truncate mt-1.5">
-                    {sc.name}
-                  </div>
-                  <div className="text-[10px] text-slate-400 flex items-center justify-between mt-1">
-                    <span>{sc.sources.length} capas</span>
-                    {studioMode && !isLive && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          switchToScene(sc.id);
-                        }}
-                        className="text-[#00F0FF] hover:underline font-semibold"
-                      >
-                        Push Live →
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Bottom GPU Transition Bar */}
-          <div className="px-2.5 py-2 bg-[#101522] border-t border-slate-800 flex items-center gap-2">
-            <select
-              value={activeTransition}
-              onChange={(e) =>
-                setActiveTransition(e.target.value as TransitionId)
-              }
-              className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white outline-none"
-              title="Seleccionar Transición de Escena en GPU (re3/transitions.re3)"
-            >
-              {TRANSITION_LIST.map((tr) => (
-                <option key={tr.id} value={tr.id}>
-                  {tr.label}
-                </option>
-              ))}
-            </select>
-            <div className="flex items-center gap-1 bg-slate-950 border border-slate-700 rounded px-2 py-1">
-              <input
-                type="number"
-                min={50}
-                max={3000}
-                step={50}
-                value={transitionDurationMs}
-                onChange={(e) =>
-                  setTransitionDurationMs(Number(e.target.value))
-                }
-                className="w-12 bg-transparent font-mono text-[#00F0FF] outline-none text-right"
-              />
-              <span className="text-[10px] text-slate-400">ms</span>
-            </div>
-            <button
-              onClick={() => setActiveStudioModal("transition_manager")}
-              className="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-[#00F0FF]"
-              title="Gestor de Reglas de Transición por Escena"
-            >
-              <Sliders className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-
-        {/* COLUMN 3 (RIGHT): PRO 6-TRACK AUDIO MIXER & EXTENSIONS (`Mezclador Pro 6 Pistas`) */}
-        <div className="col-span-4 flex flex-col h-full overflow-hidden">
-          <div className="px-3 py-2 bg-[#101522] border-b border-slate-800 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Volume2 className="w-3.5 h-3.5 text-[#00F0FF]" />
-              <span className="font-display font-bold uppercase tracking-wider text-white">
-                Audio Mixer Pro (6 Pistas + Delay)
-              </span>
-            </div>
-            <label
-              className="flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer"
-              title="Guardar/Restaurar automáticamente el volumen por cada escena (perSceneAudioplg.plg)"
-            >
-              <input
-                type="checkbox"
-                checked={perSceneAudioEnabled}
-                onChange={(e) => setPerSceneAudioEnabled(e.target.checked)}
-                className="accent-[#00F0FF]"
-              />
-              <span>Audio por Escena</span>
-            </label>
-          </div>
-
-          <div className="flex-1 p-2.5 overflow-y-auto space-y-2.5">
-            {audioBuses.map((bus) => {
-              const level =
-                bus.kind === "system" ? vuLevels.system : vuLevels.mic;
-              return (
-                <div
-                  key={bus.id}
-                  className="p-2.5 rounded-lg bg-[#101626] border border-slate-800 space-y-2"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() =>
-                          setAudioBuses((prev) =>
-                            prev.map((b) =>
-                              b.id === bus.id ? { ...b, muted: !b.muted } : b
-                            )
-                          )
-                        }
-                        className={`p-1 rounded ${
-                          bus.muted
-                            ? "bg-rose-500/20 text-rose-400"
-                            : "bg-slate-800 text-[#00F0FF]"
-                        }`}
-                      >
-                        {bus.muted ? (
-                          <VolumeX className="w-3.5 h-3.5" />
-                        ) : (
-                          <Volume2 className="w-3.5 h-3.5" />
-                        )}
-                      </button>
-                      <span className="font-semibold text-white">
-                        {bus.name}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      {/* Delay ms input for lip-sync */}
-                      <div
-                        className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5"
-                        title="Compensación de retraso de audio en milisegundos (Sincronía Labial)"
-                      >
-                        <span className="text-[10px] text-slate-400">
-                          Delay:
-                        </span>
-                        <input
-                          type="number"
-                          min={0}
-                          max={2000}
-                          step={10}
-                          value={bus.delayMs}
-                          onChange={(e) =>
-                            setAudioBuses((prev) =>
-                              prev.map((b) =>
-                                b.id === bus.id
-                                  ? { ...b, delayMs: Number(e.target.value) }
-                                  : b
-                              )
-                            )
-                          }
-                          className="w-10 bg-transparent font-mono text-[10px] text-[#00F0FF] outline-none text-right"
-                        />
-                        <span className="text-[9px] text-slate-500">ms</span>
-                      </div>
-
-                      <span className="font-mono text-[#00F0FF] w-9 text-right">
-                        {bus.muted ? "MUTE" : `${bus.volume}%`}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Fader + Real-time Segmented LED VU Meter */}
-                  <div className="space-y-1">
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={bus.volume}
-                      onChange={(e) => {
-                        const v = Number(e.target.value);
-                        setAudioBuses((prev) =>
-                          prev.map((b) =>
-                            b.id === bus.id ? { ...b, volume: v } : b
-                          )
-                        );
-                      }}
-                      className="w-full h-1.5"
-                    />
-                    <div className="h-2 w-full rounded-full bg-slate-950 overflow-hidden p-0.5 flex gap-0.5">
-                      {Array.from({ length: 24 }).map((_, idx) => {
-                        const threshold = (idx + 1) * (100 / 24);
-                        const lit = level >= threshold;
-                        const barColor =
-                          idx > 19
-                            ? "bg-rose-500"
-                            : idx > 14
-                            ? "bg-amber-400"
-                            : "bg-emerald-400";
-                        return (
-                          <div
-                            key={idx}
-                            className={`flex-1 h-full rounded-sm transition-all duration-75 ${
-                              lit ? barColor : "bg-slate-800/60"
-                            }`}
-                          />
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* 6-Track Routing Matrix + AI Noise Suppression */}
-                  <div className="flex items-center justify-between pt-1 border-t border-slate-800/80 text-[10px]">
-                    <div className="flex items-center gap-1">
-                      <span className="text-slate-400 mr-1">Pistas:</span>
-                      {bus.tracks.map((tActive, tIdx) => (
-                        <button
-                          key={tIdx}
-                          onClick={() =>
-                            setAudioBuses((prev) =>
-                              prev.map((b) =>
-                                b.id === bus.id
-                                  ? {
-                                      ...b,
-                                      tracks: b.tracks.map((val, i) =>
-                                        i === tIdx ? !val : val
-                                      ),
-                                    }
-                                  : b
-                              )
-                            )
-                          }
-                          className={`px-1.5 py-0.5 rounded font-mono font-bold ${
-                            tActive
-                              ? "bg-[#00F0FF]/20 text-[#00F0FF] border border-[#00F0FF]/40"
-                              : "bg-slate-900 text-slate-500"
-                          }`}
-                          title={`Asignar a Pista Multipista #${tIdx + 1}`}
-                        >
-                          T{tIdx + 1}
-                        </button>
-                      ))}
-                    </div>
-
-                    <button
-                      onClick={() =>
-                        setAudioBuses((prev) =>
-                          prev.map((b) =>
-                            b.id === bus.id
-                              ? { ...b, noiseSuppression: !b.noiseSuppression }
-                              : b
-                          )
-                        )
-                      }
-                      className={`px-2 py-0.5 rounded font-semibold ${
-                        bus.noiseSuppression
-                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
-                          : "bg-slate-900 text-slate-500"
-                      }`}
-                      title="Filtro de Supresión de Ruido IA (DeepFilterNet3 / RTX)"
-                    >
-                      IA Noise Gate {bus.noiseSuppression ? "ON" : "OFF"}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Quick Studio Extensions Bar */}
-          <div className="px-2.5 py-1.5 bg-[#101522] border-t border-slate-800 flex items-center justify-between gap-1">
-            <button
-              onClick={() => setActiveStudioModal("auto_switcher")}
-              className="flex-1 py-1 px-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center gap-1 truncate text-[11px]"
-            >
-              <Sparkles className="w-3 h-3 text-[#00F0FF]" /> Auto Switcher
-            </button>
-            <button
-              onClick={() => setActiveStudioModal("lower_thirds")}
-              className="flex-1 py-1 px-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center gap-1 truncate text-[11px]"
-            >
-              Lower Thirds
-            </button>
-            <button
-              onClick={() =>
-                invoke("open_media_folder", { sub: "recordings" })
-              }
-              className="py-1 px-2 rounded bg-slate-800 hover:bg-slate-700 text-[#00F0FF] flex items-center gap-1 text-[11px]"
-              title="Abrir carpeta de vídeos grabados en Windows"
-            >
-              <FolderOpen className="w-3 h-3" /> Vídeos
-            </button>
-          </div>
-        </div>
+        {/* COLUMN 3: 3-TAB MULTI-DOCK (AUDIO MIXER, LIVE IRC CHAT, QUICK RECORDINGS) */}
+        <AudioAndDockPanel
+          audioBuses={audioBuses}
+          onUpdateAudioBuses={setAudioBuses}
+          vuLevels={vuLevels}
+          perSceneAudioEnabled={perSceneAudioEnabled}
+          onTogglePerSceneAudio={setPerSceneAudioEnabled}
+          twitchChannel={globalSettings.twitchIrcChannel}
+          onChangeTwitchChannel={(ch) =>
+            setGlobalSettings((g) => ({ ...g, twitchIrcChannel: ch }))
+          }
+          onOpenFullRecordingsModal={() => setActiveStudioModal("recordings")}
+          onNotify={showToast}
+        />
       </section>
 
       {/* FLOATING 4-TAB SOURCE PROPERTIES INSPECTOR */}
@@ -1851,6 +1550,18 @@ export const App: React.FC = () => {
           onClose={() => setInspectorTarget(null)}
         />
       )}
+
+      {/* GLOBAL SETTINGS CENTER MODAL (6 SECTIONS) */}
+      <GlobalSettingsModal
+        isOpen={settingsModalOpen}
+        initialTab={settingsInitialTab}
+        onClose={() => setSettingsModalOpen(false)}
+        settings={globalSettings}
+        onUpdateSettings={setGlobalSettings}
+        streamChannels={streamChannels}
+        onUpdateStreamChannels={setStreamChannels}
+        onNotify={showToast}
+      />
 
       {/* BUILT-IN STUDIO EXTENSIONS & EXPRESS VIDEO EDITOR MODALS */}
       <StudioModals

@@ -93,7 +93,8 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [snapGuides, setSnapGuides] = useState<{ x?: number; y?: number }>({});
 
-  // Whiteboard Telestrator state
+  // Whiteboard Telestrator state (collapsible floating bar)
+  const [showWhiteboardBar, setShowWhiteboardBar] = useState<boolean>(false);
   const [wbTool, setWbTool] = useState<WhiteboardTool>("select");
   const [wbColor, setWbColor] = useState<string>("#00F0FF");
   const [wbWidth, setWbWidth] = useState<number>(5);
@@ -434,8 +435,41 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         const cBottomPx = (cropBottom / 100) * height;
         const drawX = x + cLeftPx;
         const drawY = y + cTopPx;
-        const drawW = Math.max(8, width - cLeftPx - cRightPx);
+        let drawW = Math.max(8, width - cLeftPx - cRightPx);
         const drawH = Math.max(8, height - cTopPx - cBottomPx);
+
+        // If Lower Third, dynamically measure text width so box expands if needed and never clips
+        let lowerThirdHeadlineFontPx = Math.round(drawH * 0.33);
+        let lowerThirdSubFontPx = Math.round(drawH * 0.19);
+        const lowerThirdHeadlineText =
+          src.textContent || "GAMECASTER PLUS // ESTUDIO PRO";
+        const lowerThirdSubText =
+          [src.subtitleContent, src.socialHandle].filter(Boolean).join("  •  ") ||
+          "TRANSMISIÓN EN DIRECTO // 1080P60";
+
+        if (src.type === "lower_third") {
+          ctx.font = `800 ${lowerThirdHeadlineFontPx}px Rajdhani, Inter, sans-serif`;
+          const headW = ctx.measureText(lowerThirdHeadlineText).width;
+          ctx.font = `700 ${lowerThirdSubFontPx}px Inter, sans-serif`;
+          const subW = ctx.measureText(lowerThirdSubText).width;
+          const maxTextW = Math.max(headW, subW);
+          const maxAllowedW = Math.max(320, stageW - drawX - 32);
+          drawW = Math.min(maxAllowedW, Math.max(drawW, Math.ceil(maxTextW + 72)));
+
+          const availTextW = Math.max(120, drawW - 56);
+          if (headW > availTextW) {
+            lowerThirdHeadlineFontPx = Math.max(
+              16,
+              Math.floor(lowerThirdHeadlineFontPx * (availTextW / headW))
+            );
+          }
+          if (subW > availTextW) {
+            lowerThirdSubFontPx = Math.max(
+              12,
+              Math.floor(lowerThirdSubFontPx * (availTextW / subW))
+            );
+          }
+        }
 
         // Drop Shadow
         if (src.effects.dropShadowEnabled) {
@@ -481,7 +515,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         // Apply CSS Shader Filter
         ctx.filter = buildCssFilterForSource(src);
 
-        // Draw Source Content by Type
+        // Draw Source Content by Type (Strictly separated per source type)
         if (src.type === "screen") {
           const dImg = desktopImgRef.current;
           if (dImg && dImg.complete && dImg.naturalWidth > 0) {
@@ -545,8 +579,9 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
             ctx.fillStyle = grad;
             ctx.fillRect(x, y, width, height);
             ctx.fillStyle = "#00F0FF";
-            ctx.font = "bold 22px Inter, sans-serif";
+            ctx.font = "bold 20px Inter, sans-serif";
             ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
             ctx.fillText("📷 CÁMARA WEB EN VIVO", x + width / 2, y + height / 2);
           }
         } else if (src.type === "color") {
@@ -566,6 +601,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
             ctx.fillStyle = "#38BDF8";
             ctx.font = "bold 24px Inter, sans-serif";
             ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
             ctx.fillText(`🖼️ ${src.name}`, x + width / 2, y + height / 2);
           }
         } else if (src.type === "media" || src.type === "replay") {
@@ -573,17 +609,17 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           const mVid = src.mediaUrl ? videoElementsRef.current[vidKey] : null;
           if (mVid && mVid.readyState >= 2) {
             ctx.drawImage(mVid, x, y, width, height);
-          } else if (desktopImgRef.current && src.type === "replay") {
-            ctx.drawImage(desktopImgRef.current, x, y, width, height);
           } else {
+            // Strict separation: Replay and Media never duplicate the desktop capture
             ctx.fillStyle = "#090D16";
             ctx.fillRect(x, y, width, height);
-            ctx.fillStyle = "#F43F5E";
-            ctx.font = "bold 24px Inter, sans-serif";
+            ctx.fillStyle = src.type === "replay" ? "#FF2A54" : "#38BDF8";
+            ctx.font = "bold 22px Inter, sans-serif";
             ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
             ctx.fillText(
               src.type === "replay"
-                ? "⏪ INSTANT REPLAY BUFFER"
+                ? "⏪ BUFFER DE REPETICIÓN LISTO (Pulsa Replay)"
                 : `🎬 ${src.name}`,
               x + width / 2,
               y + height / 2
@@ -595,62 +631,71 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
             ctx.save();
             ctx.filter = "none";
             ctx.fillStyle = "#FF2A54";
-            ctx.fillRect(drawX + 16, drawY + 16, 220, 38);
+            ctx.fillRect(drawX + 16, drawY + 16, 235, 38);
             ctx.fillStyle = "#FFFFFF";
             ctx.font = "bold 18px Rajdhani, Inter, sans-serif";
             ctx.textAlign = "left";
+            ctx.textBaseline = "alphabetic";
             ctx.fillText("● REPETICIÓN INSTANTÁNEA", drawX + 28, drawY + 41);
             ctx.restore();
           }
         } else if (src.type === "text") {
           ctx.filter = "none";
-          const fSize = src.fontSize || 52;
-          ctx.font = `800 ${fSize}px ${src.fontFamily || "Rajdhani, Inter, sans-serif"}`;
+          const txt = src.textContent || src.name;
+          let fSize = src.fontSize || 52;
+          const fontFam = src.fontFamily || "Rajdhani, Inter, sans-serif";
+          ctx.font = `800 ${fSize}px ${fontFam}`;
+          const measuredW = ctx.measureText(txt).width;
+          const maxTextW = Math.max(80, drawW - 40);
+          if (measuredW > maxTextW) {
+            fSize = Math.max(16, Math.floor(fSize * (maxTextW / measuredW)));
+            ctx.font = `800 ${fSize}px ${fontFam}`;
+          }
           ctx.textBaseline = "middle";
           ctx.textAlign = "left";
           ctx.lineWidth = Math.max(3, fSize * 0.08);
           ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
-          const txt = src.textContent || src.name;
-          ctx.strokeText(txt, drawX + 20, drawY + drawH / 2);
+          ctx.strokeText(txt, drawX + 20, drawY + drawH / 2, maxTextW);
           ctx.fillStyle = src.textColor || "#FFFFFF";
-          ctx.fillText(txt, drawX + 20, drawY + drawH / 2);
+          ctx.fillText(txt, drawX + 20, drawY + drawH / 2, maxTextW);
         } else if (src.type === "lower_third") {
           ctx.filter = "none";
-          // Animated broadcast lower-third bar
+          // Animated broadcast lower-third bar with auto-fitted width
           const pulse = 0.92 + 0.08 * Math.sin(nowMs * 0.004);
           const bgGrad = ctx.createLinearGradient(drawX, drawY, drawX + drawW, drawY);
-          bgGrad.addColorStop(0, "rgba(7, 10, 18, 0.94)");
-          bgGrad.addColorStop(0.85, "rgba(15, 23, 42, 0.88)");
+          bgGrad.addColorStop(0, "rgba(7, 10, 18, 0.95)");
+          bgGrad.addColorStop(0.88, "rgba(15, 23, 42, 0.90)");
           bgGrad.addColorStop(1, "rgba(15, 23, 42, 0.0)");
           ctx.fillStyle = bgGrad;
           ctx.fillRect(drawX, drawY, drawW, drawH);
 
-          // Left Accent Bar
+          // Left Accent Bar & Bottom Pulse Line
           ctx.fillStyle = src.accentColor || "#00F0FF";
           ctx.fillRect(drawX, drawY, 10, drawH);
-          ctx.fillRect(drawX, drawY + drawH - 5, drawW * 0.72 * pulse, 5);
+          ctx.fillRect(drawX, drawY + drawH - 5, drawW * 0.78 * pulse, 5);
 
-          // Headline
+          const availTextW = Math.max(120, drawW - 48);
+
+          // Headline (guaranteed non-clipped)
           ctx.fillStyle = src.textColor || "#FFFFFF";
-          ctx.font = `800 ${Math.round(drawH * 0.34)}px Rajdhani, Inter, sans-serif`;
+          ctx.font = `800 ${lowerThirdHeadlineFontPx}px Rajdhani, Inter, sans-serif`;
           ctx.textAlign = "left";
           ctx.textBaseline = "top";
           ctx.fillText(
-            src.textContent || "GAMECASTER PLUS STUDIO",
+            lowerThirdHeadlineText,
             drawX + 28,
-            drawY + drawH * 0.16
+            drawY + drawH * 0.16,
+            availTextW
           );
 
-          // Subtitle + Social badge
+          // Subtitle + Social badge (guaranteed non-clipped)
           ctx.fillStyle = src.accentColor || "#00F0FF";
-          ctx.font = `700 ${Math.round(drawH * 0.2)}px Inter, sans-serif`;
-          const sub = [src.subtitleContent, src.socialHandle]
-            .filter(Boolean)
-            .join("  •  ");
+          ctx.font = `700 ${lowerThirdSubFontPx}px Inter, sans-serif`;
           ctx.fillText(
-            sub || "TRANSMISIÓN EN DIRECTO // 1080P60",
+            lowerThirdSubText,
             drawX + 28,
-            drawY + drawH * 0.58
+            drawY + drawH * 0.58,
+            availTextW
           );
         }
 
@@ -1320,7 +1365,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
 
   return (
     <div className="relative flex-1 flex flex-col bg-[#05070B] border-b border-slate-800/80 overflow-hidden select-none">
-      {/* Stage Sub-Header & Whiteboard Telestrator Bar */}
+      {/* Stage Sub-Header (Clean & Uncluttered) */}
       <div className="h-9 px-3 bg-[#0B0E17] border-b border-slate-800/80 flex items-center justify-between text-xs">
         <div className="flex items-center gap-2">
           <span className="px-2 py-0.5 rounded bg-slate-800/90 text-[#00F0FF] font-mono font-semibold text-[11px]">
@@ -1364,10 +1409,51 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           )}
         </div>
 
-        {/* Built-in Whiteboard Telestrator (`whiteboardoverlayplg.plg`) */}
-        <div className="flex items-center gap-1 bg-[#070A12] px-2 py-0.5 rounded-md border border-slate-800/90">
-          <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 mr-1">
-            Pizarra En Vivo:
+        {/* Collapsible Whiteboard Telestrator Toggle Button (`whiteboardoverlayplg.plg`) */}
+        <div className="flex items-center gap-2">
+          {wbStrokes.length > 0 && !showWhiteboardBar && (
+            <button
+              onClick={() => setWbStrokes([])}
+              className="px-2 py-0.5 rounded bg-rose-500/15 border border-rose-500/40 text-rose-300 hover:bg-rose-500/25 text-[11px] flex items-center gap-1"
+              title="Limpiar trazos de la pizarra"
+            >
+              <Trash2 className="w-3 h-3" /> Limpiar ({wbStrokes.length})
+            </button>
+          )}
+          <button
+            onClick={() => {
+              setShowWhiteboardBar((prev) => {
+                const next = !prev;
+                if (!next) {
+                  setWbTool("select");
+                } else if (wbTool === "select") {
+                  setWbTool("pen");
+                }
+                return next;
+              });
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[11px] font-semibold border transition ${
+              showWhiteboardBar
+                ? "bg-[#00F0FF] text-slate-950 border-[#00F0FF] shadow-[0_0_12px_rgba(0,240,255,0.4)]"
+                : "bg-[#070A12] text-slate-300 border-slate-800 hover:border-slate-700 hover:text-white"
+            }`}
+            title="Desplegar barra flotante de Pizarra Táctica en Vivo (Whiteboard Telestrator)"
+          >
+            <span>✏️ Pizarra en Vivo</span>
+            {showWhiteboardBar && (
+              <span className="text-[10px] font-mono uppercase px-1 rounded bg-slate-950/25">
+                ACTIVA
+              </span>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* FLOATING WHITEBOARD TELESTRATOR BAR (Only visible when toggled ON) */}
+      {showWhiteboardBar && (
+        <div className="absolute top-12 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-[#0B0E17]/95 backdrop-blur-md px-3 py-1.5 rounded-xl border border-[#00F0FF]/50 shadow-[0_10px_30px_rgba(0,0,0,0.85)]">
+          <span className="text-[10px] font-mono uppercase tracking-wider text-[#00F0FF] font-bold mr-1">
+            ✏️ Telestrator:
           </span>
           {[
             { id: "select", icon: MousePointer, label: "Seleccionar / Mover Capas" },
@@ -1376,7 +1462,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
             { id: "arrow", icon: ArrowUpRight, label: "Flecha Táctica" },
             { id: "rect", icon: Square, label: "Rectángulo" },
             { id: "circle", icon: CircleIcon, label: "Círculo" },
-            { id: "laser", icon: Sparkles, label: "Puntero Láser" },
+            { id: "laser", icon: Sparkles, label: "Puntero Láser (Auto-borrado 2.5s)" },
           ].map((item) => {
             const Icon = item.icon;
             const active = wbTool === item.id;
@@ -1385,10 +1471,10 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
                 key={item.id}
                 onClick={() => setWbTool(item.id as WhiteboardTool)}
                 title={item.label}
-                className={`p-1 rounded transition ${
+                className={`p-1.5 rounded-lg transition ${
                   active
                     ? "bg-[#00F0FF] text-slate-950 shadow-[0_0_8px_rgba(0,240,255,0.4)]"
-                    : "text-slate-400 hover:text-white hover:bg-slate-800"
+                    : "text-slate-300 hover:text-white hover:bg-slate-800"
                 }`}
               >
                 <Icon className="w-3.5 h-3.5" />
@@ -1396,13 +1482,13 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
             );
           })}
 
-          <div className="h-3.5 w-[1px] bg-slate-800 mx-1" />
+          <div className="h-4 w-[1px] bg-slate-800 mx-1" />
 
           {["#00F0FF", "#FF2A54", "#F59E0B", "#10B981", "#FFFFFF"].map((c) => (
             <button
               key={c}
               onClick={() => setWbColor(c)}
-              className={`w-3.5 h-3.5 rounded-full border ${
+              className={`w-4 h-4 rounded-full border transition ${
                 wbColor === c ? "border-white scale-125" : "border-transparent"
               }`}
               style={{ backgroundColor: c }}
@@ -1416,26 +1502,36 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
             max={16}
             value={wbWidth}
             onChange={(e) => setWbWidth(Number(e.target.value))}
-            className="w-12 h-1 ml-1"
+            className="w-16 h-1.5 ml-1"
             title={`Grosor de trazo: ${wbWidth}px`}
           />
 
           <button
             onClick={() => setWbStrokes((prev) => prev.slice(0, -1))}
-            className="p-1 text-slate-400 hover:text-white"
+            className="p-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800"
             title="Deshacer último trazo"
           >
             <Undo2 className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => setWbStrokes([])}
-            className="p-1 text-rose-400 hover:text-rose-300"
-            title="Limpiar pizarra"
+            className="p-1.5 rounded-lg text-rose-400 hover:text-rose-300 hover:bg-rose-500/10"
+            title="Borrar toda la pizarra"
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
+          <button
+            onClick={() => {
+              setShowWhiteboardBar(false);
+              setWbTool("select");
+            }}
+            className="ml-1 px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px]"
+            title="Ocultar barra de pizarra"
+          >
+            ✕
+          </button>
         </div>
-      </div>
+      )}
 
       {/* Central Stage Canvas Area (Single PGM or Dual SplitView Studio Mode) */}
       <div className="flex-1 flex items-center justify-center gap-3 p-3 overflow-hidden bg-[radial-gradient(ellipse_at_center,_#0D1322_0%,_#05070B_100%)]">

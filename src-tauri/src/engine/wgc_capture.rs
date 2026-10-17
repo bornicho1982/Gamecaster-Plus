@@ -14,12 +14,59 @@ use windows_sys::Win32::{
         BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, SRCCOPY,
     },
     Storage::Xps::PrintWindow,
+    System::Threading::GetCurrentProcessId,
     UI::WindowsAndMessaging::{
         EnumWindows, GetForegroundWindow, GetSystemMetrics, GetWindowRect, GetWindowTextLengthW,
-        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PW_RENDERFULLCONTENT,
-        SM_CXSCREEN, SM_CYSCREEN,
+        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+        SetWindowDisplayAffinity, PW_RENDERFULLCONTENT, SM_CXSCREEN, SM_CYSCREEN,
     },
 };
+
+const WDA_NONE: u32 = 0x00000000;
+const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
+
+/// Excludes or includes all top-level windows belonging to the current Gamecaster Plus process
+/// from desktop/screen capture via Win32 `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)`.
+/// This eliminates the "infinite mirror effect" when capturing the primary monitor.
+pub fn set_process_windows_exclude_from_capture(exclude: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        struct AffinityCtx {
+            target_pid: u32,
+            affinity: u32,
+        }
+
+        unsafe extern "system" fn apply_affinity_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let ctx = &*(lparam as *const AffinityCtx);
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            if pid == ctx.target_pid {
+                let _ = SetWindowDisplayAffinity(hwnd, ctx.affinity);
+            }
+            TRUE
+        }
+
+        let ctx = AffinityCtx {
+            target_pid: GetCurrentProcessId(),
+            affinity: if exclude {
+                WDA_EXCLUDEFROMCAPTURE
+            } else {
+                WDA_NONE
+            },
+        };
+        let _ = EnumWindows(
+            Some(apply_affinity_proc),
+            (&ctx as *const AffinityCtx) as LPARAM,
+        );
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = exclude;
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowInfo {
