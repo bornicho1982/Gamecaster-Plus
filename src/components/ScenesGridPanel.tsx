@@ -5,7 +5,16 @@ import {
   TransitionId,
   createDefaultSource,
 } from "../types/broadcaster";
-import { Plus, Trash2, Sliders, Edit3 } from "lucide-react";
+import {
+  Plus,
+  Trash2,
+  Sliders,
+  Edit3,
+  Copy,
+  ChevronLeft,
+  ChevronRight,
+  Layers,
+} from "lucide-react";
 
 interface ScenesGridPanelProps {
   scenes: Scene[];
@@ -21,6 +30,18 @@ interface ScenesGridPanelProps {
   onChangeTransitionDuration: (ms: number) => void;
   onOpenTransitionRulesModal: () => void;
 }
+
+const SOURCE_ICON_MAP: Record<string, string> = {
+  screen: "🖥️",
+  window: "🎮",
+  camera: "📷",
+  lower_third: "📺",
+  text: "🔤",
+  image: "🖼️",
+  media: "🎬",
+  color: "🎨",
+  replay: "⏪",
+};
 
 export const ScenesGridPanel: React.FC<ScenesGridPanelProps> = ({
   scenes,
@@ -67,15 +88,44 @@ export const ScenesGridPanel: React.FC<ScenesGridPanelProps> = ({
     onSelectScene(newSc.id);
   };
 
+  const handleDuplicateScene = (sc: Scene) => {
+    const clonedSources = sc.sources.map((src) => ({
+      ...JSON.parse(JSON.stringify(src)),
+      id: `src_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    }));
+
+    const newSc: Scene = {
+      ...JSON.parse(JSON.stringify(sc)),
+      id: `scene_${Date.now()}`,
+      name: `${sc.name} (Copia)`,
+      sources: clonedSources,
+    };
+    onUpdateScenes([...scenes, newSc]);
+    onSelectScene(newSc.id);
+  };
+
+  const handleMoveScene = (index: number, direction: -1 | 1) => {
+    const targetIdx = index + direction;
+    if (targetIdx < 0 || targetIdx >= scenes.length) return;
+    const next = [...scenes];
+    const temp = next[index];
+    next[index] = next[targetIdx];
+    next[targetIdx] = temp;
+    onUpdateScenes(next);
+  };
+
   return (
     <div className="col-span-4 flex flex-col h-full overflow-hidden bg-[#0B0E17]">
       {/* Column Header */}
       <div className="px-3 py-2 bg-[#101522] border-b border-slate-800 flex items-center justify-between shrink-0">
-        <span className="font-display font-bold uppercase tracking-wider text-white">
-          Matriz de Escenas ({scenes.length})
-        </span>
+        <div className="flex items-center gap-1.5">
+          <Layers className="w-3.5 h-3.5 text-[#00F0FF]" />
+          <span className="font-display font-bold uppercase tracking-wider text-white">
+            Matriz de Escenas ({scenes.length})
+          </span>
+        </div>
         <span className="text-[10px] text-slate-400">
-          Doble clic para renombrar • F1..F8
+          Atajos rápidos: F1..F{Math.min(8, scenes.length)}
         </span>
       </div>
 
@@ -86,6 +136,9 @@ export const ScenesGridPanel: React.FC<ScenesGridPanelProps> = ({
           const isPrev = studioMode && sc.id === previewSceneId;
           const isRenaming = editingSceneId === sc.id;
 
+          // Unique icon set for the layers in this scene
+          const layerTypes = Array.from(new Set(sc.sources.map((s) => s.type)));
+
           return (
             <div
               key={sc.id}
@@ -94,7 +147,7 @@ export const ScenesGridPanel: React.FC<ScenesGridPanelProps> = ({
                 setEditingSceneId(sc.id);
                 setEditingName(sc.name);
               }}
-              className={`p-2.5 rounded-xl border cursor-pointer flex flex-col justify-between transition ${
+              className={`p-2 rounded-xl border cursor-pointer flex flex-col justify-between transition ${
                 isLive
                   ? "bg-rose-500/15 border-rose-500 shadow-[0_0_12px_rgba(244,63,94,0.25)]"
                   : isPrev
@@ -103,48 +156,75 @@ export const ScenesGridPanel: React.FC<ScenesGridPanelProps> = ({
               }`}
             >
               <div className="flex items-center justify-between gap-1">
-                <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-950 text-[#00F0FF] border border-slate-800 font-bold">
-                  F{idx + 1}
-                </span>
-
                 <div className="flex items-center gap-1">
+                  <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-950 text-[#00F0FF] border border-slate-800 font-bold">
+                    F{idx + 1}
+                  </span>
+                  {/* Reorder Buttons */}
+                  <div className="flex items-center" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      disabled={idx === 0}
+                      onClick={() => handleMoveScene(idx, -1)}
+                      className="p-0.5 text-slate-500 hover:text-slate-200 disabled:opacity-20"
+                      title="Mover escena a la izquierda"
+                    >
+                      <ChevronLeft className="w-3 h-3" />
+                    </button>
+                    <button
+                      disabled={idx === scenes.length - 1}
+                      onClick={() => handleMoveScene(idx, 1)}
+                      className="p-0.5 text-slate-500 hover:text-slate-200 disabled:opacity-20"
+                      title="Mover escena a la derecha"
+                    >
+                      <ChevronRight className="w-3 h-3" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
                   {isLive && (
-                    <span className="px-1.5 py-0.5 rounded bg-rose-600 text-white font-bold text-[9px] uppercase tracking-wider">
-                      EN VIVO
+                    <span className="px-1 py-0.5 rounded bg-rose-600 text-white font-bold text-[8px] uppercase tracking-wider">
+                      VIVO
                     </span>
                   )}
                   {isPrev && (
-                    <span className="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-bold text-[9px] uppercase tracking-wider">
+                    <span className="px-1 py-0.5 rounded bg-amber-500 text-slate-950 font-bold text-[8px] uppercase tracking-wider">
                       PREV
                     </span>
                   )}
+
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
+                    onClick={() => handleDuplicateScene(sc)}
+                    className="text-slate-500 hover:text-[#00F0FF] p-1 rounded hover:bg-slate-800"
+                    title="Duplicar escena completa"
+                  >
+                    <Copy className="w-2.5 h-2.5" />
+                  </button>
+
+                  <button
+                    onClick={() => {
                       setEditingSceneId(sc.id);
                       setEditingName(sc.name);
                     }}
-                    className="text-slate-500 hover:text-slate-200 p-0.5"
+                    className="text-slate-500 hover:text-slate-200 p-1 rounded hover:bg-slate-800"
                     title="Renombrar escena"
                   >
-                    <Edit3 className="w-3 h-3" />
+                    <Edit3 className="w-2.5 h-2.5" />
                   </button>
+
                   {scenes.length > 1 && (
                     <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const remaining = scenes.filter(
-                          (item) => item.id !== sc.id
-                        );
+                      onClick={() => {
+                        const remaining = scenes.filter((item) => item.id !== sc.id);
                         onUpdateScenes(remaining);
                         if (activeSceneId === sc.id) {
                           onPushSceneLive(remaining[0].id);
                         }
                       }}
-                      className="text-slate-500 hover:text-rose-400 p-0.5"
+                      className="text-slate-500 hover:text-rose-400 p-1 rounded hover:bg-slate-800"
                       title="Eliminar escena"
                     >
-                      <Trash2 className="w-3 h-3" />
+                      <Trash2 className="w-2.5 h-2.5" />
                     </button>
                   )}
                 </div>
@@ -162,25 +242,36 @@ export const ScenesGridPanel: React.FC<ScenesGridPanelProps> = ({
                     if (e.key === "Escape") setEditingSceneId(null);
                   }}
                   onClick={(e) => e.stopPropagation()}
-                  className="mt-1.5 w-full bg-slate-950 border border-[#00F0FF] rounded px-1.5 py-0.5 text-white font-semibold text-xs outline-none"
+                  className="mt-1 w-full bg-slate-950 border border-[#00F0FF] rounded px-1.5 py-0.5 text-white font-semibold text-xs outline-none"
                 />
               ) : (
-                <div className="font-semibold text-white truncate mt-1.5">
+                <div className="font-semibold text-white truncate mt-1 text-xs">
                   {sc.name}
                 </div>
               )}
 
-              <div className="text-[10px] text-slate-400 flex items-center justify-between mt-1">
-                <span>{sc.sources.length} capas</span>
+              {/* Layer Types Badges + Push Live Button */}
+              <div className="text-[10px] text-slate-400 flex items-center justify-between mt-1 pt-1 border-t border-slate-800/40">
+                <div className="flex items-center gap-0.5 truncate max-w-[120px]" title={`${sc.sources.length} capas en esta escena`}>
+                  {layerTypes.map((t) => (
+                    <span key={t} className="text-[11px] leading-none">
+                      {SOURCE_ICON_MAP[t] || "📦"}
+                    </span>
+                  ))}
+                  <span className="text-[9px] text-slate-500 font-mono ml-0.5">
+                    ({sc.sources.length})
+                  </span>
+                </div>
+
                 {studioMode && !isLive && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onPushSceneLive(sc.id);
                     }}
-                    className="text-[#00F0FF] hover:underline font-semibold"
+                    className="text-[#00F0FF] hover:underline font-semibold text-[10px]"
                   >
-                    Enviar a Vivo →
+                    Vivo →
                   </button>
                 )}
               </div>

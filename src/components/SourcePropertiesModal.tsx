@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   StageSource,
@@ -102,12 +102,66 @@ export const SourcePropertiesModal: React.FC<SourcePropertiesModalProps> = ({
     });
   };
 
+  const [panelPos, setPanelPos] = useState<{ x: number; y: number }>({
+    x: 0,
+    y: 0,
+  });
+  const [isMinimized, setIsMinimized] = useState<boolean>(false);
+  const dragStartRef = useRef<{
+    mouseX: number;
+    mouseY: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+
+  const handleHeaderMouseDown = (e: React.MouseEvent) => {
+    const targetTag = (e.target as HTMLElement).tagName;
+    if (targetTag === "INPUT" || targetTag === "BUTTON" || targetTag === "SELECT")
+      return;
+
+    dragStartRef.current = {
+      mouseX: e.clientX,
+      mouseY: e.clientY,
+      startX: panelPos.x,
+      startY: panelPos.y,
+    };
+
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!dragStartRef.current) return;
+      const dx = ev.clientX - dragStartRef.current.mouseX;
+      const dy = ev.clientY - dragStartRef.current.mouseY;
+      setPanelPos({
+        x: dragStartRef.current.startX + dx,
+        y: dragStartRef.current.startY + dy,
+      });
+    };
+
+    const onMouseUp = () => {
+      dragStartRef.current = null;
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm">
-      <div className="w-[690px] max-h-[88vh] flex flex-col rounded-xl bg-[#0B0E17] border border-slate-700/80 shadow-[0_25px_70px_rgba(0,0,0,0.9)] overflow-hidden text-xs">
-        {/* Header */}
-        <div className="px-4 py-3 bg-[#101522] border-b border-slate-800 flex items-center justify-between">
+    <div className="fixed inset-0 z-50 pointer-events-none flex items-center justify-center">
+      <div
+        style={{
+          transform: `translate(${panelPos.x}px, ${panelPos.y}px)`,
+        }}
+        className="pointer-events-auto w-[640px] max-h-[88vh] flex flex-col rounded-xl bg-[#0B0E17]/95 backdrop-blur-md border border-[#00F0FF]/40 shadow-[0_25px_70px_rgba(0,0,0,0.9)] overflow-hidden text-xs transition-[height]"
+      >
+        {/* Draggable Header */}
+        <div
+          onMouseDown={handleHeaderMouseDown}
+          className="px-4 py-2.5 bg-[#101522] border-b border-slate-800 flex items-center justify-between cursor-move select-none"
+          title="Arrastra para mover este inspector y ver el lienzo despejado"
+        >
           <div className="flex items-center gap-2.5">
+            <Move className="w-3.5 h-3.5 text-[#00F0FF] opacity-70" />
             <span className="px-2 py-0.5 rounded bg-[#00F0FF]/15 text-[#00F0FF] font-mono font-bold uppercase text-[10px]">
               {source.type}
             </span>
@@ -117,25 +171,42 @@ export const SourcePropertiesModal: React.FC<SourcePropertiesModalProps> = ({
               onChange={(e) =>
                 onUpdate(sceneId, { ...source, name: e.target.value })
               }
-              className="bg-slate-900/90 border border-slate-700 rounded px-2.5 py-1 text-sm font-semibold text-white focus:border-[#00F0FF] outline-none"
+              className="bg-slate-900/90 border border-slate-700 rounded px-2.5 py-0.5 text-xs font-semibold text-white focus:border-[#00F0FF] outline-none"
             />
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
-          >
-            <X className="w-4 h-4" />
-          </button>
+
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setIsMinimized((m) => !m)}
+              className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition"
+              title={isMinimized ? "Expandir inspector" : "Minimizar inspector"}
+            >
+              {isMinimized ? (
+                <Maximize2 className="w-3.5 h-3.5 text-[#00F0FF]" />
+              ) : (
+                <Minimize2 className="w-3.5 h-3.5" />
+              )}
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition"
+              title="Cerrar inspector"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
-        {/* Source-Specific Source Configuration Strip */}
-        {(source.type === "screen" ||
-          source.type === "window" ||
-          source.type === "camera" ||
-          source.type === "text" ||
-          source.type === "lower_third" ||
-          source.type === "color") && (
-          <div className="px-4 py-2.5 bg-[#0D121F] border-b border-slate-800/90 flex flex-wrap items-center gap-3">
+        {!isMinimized && (
+          <>
+            {/* Source-Specific Source Configuration Strip */}
+            {(source.type === "screen" ||
+              source.type === "window" ||
+              source.type === "camera" ||
+              source.type === "text" ||
+              source.type === "lower_third" ||
+              source.type === "color") && (
+              <div className="px-4 py-2 bg-[#0D121F] border-b border-slate-800/90 flex flex-wrap items-center gap-3">
             {source.type === "screen" && (
               <div className="flex items-center gap-2 w-full">
                 <span className="text-slate-400 font-medium">
@@ -1021,18 +1092,20 @@ export const SourcePropertiesModal: React.FC<SourcePropertiesModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="px-4 py-2.5 bg-[#101522] border-t border-slate-800 flex items-center justify-between">
-          <span className="text-[11px] text-slate-400">
-            Todos los cambios se aplican en vivo sobre el compositor a 60 FPS
+        <div className="px-4 py-2 bg-[#101522] border-t border-slate-800 flex items-center justify-between">
+          <span className="text-[10px] text-slate-400">
+            Arrastra la barra superior para mover este panel flotante
           </span>
           <button
             onClick={onClose}
-            className="px-5 py-1.5 rounded-lg bg-[#00F0FF] text-slate-950 font-bold hover:brightness-110 transition"
+            className="px-4 py-1 rounded-lg bg-[#00F0FF] text-slate-950 font-bold hover:brightness-110 transition text-xs"
           >
-            Cerrar Inspector
+            Cerrar
           </button>
         </div>
-      </div>
-    </div>
+      </>
+    )}
+  </div>
+</div>
   );
 };
