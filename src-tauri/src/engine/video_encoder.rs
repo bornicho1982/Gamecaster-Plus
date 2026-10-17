@@ -1,9 +1,12 @@
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -11,6 +14,7 @@ pub struct ActiveRecordingSession {
     pub child: Child,
     pub output_path: String,
     pub started_at_unix: i64,
+    pub encoder_used: String,
 }
 
 pub struct ActiveStreamSession {
@@ -21,6 +25,7 @@ pub struct ActiveStreamSession {
 
 static RECORDING_SESSION: OnceLock<Mutex<Option<ActiveRecordingSession>>> = OnceLock::new();
 static STREAM_SESSION: OnceLock<Mutex<Option<ActiveStreamSession>>> = OnceLock::new();
+static AUDIO_DEVICES_CACHE: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
 fn get_rec_mutex() -> &'static Mutex<Option<ActiveRecordingSession>> {
     RECORDING_SESSION.get_or_init(|| Mutex::new(None))
@@ -28,6 +33,18 @@ fn get_rec_mutex() -> &'static Mutex<Option<ActiveRecordingSession>> {
 
 fn get_stream_mutex() -> &'static Mutex<Option<ActiveStreamSession>> {
     STREAM_SESSION.get_or_init(|| Mutex::new(None))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingConfig {
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub fps: Option<u32>,
+    pub encoder: Option<String>, // "h264_nvenc" | "libx264"
+    pub bitrate_kbps: Option<u32>,
+    pub format: Option<String>, // "mp4" | "mkv"
+    pub record_audio: Option<bool>,
+    pub audio_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,8 +80,140 @@ pub fn get_presentations_dir() -> PathBuf {
     dir
 }
 
-/// Starts a native FFmpeg desktop recording (`gdigrab` -> `libx264` + `yuv420p` + `+faststart`).
-pub fn start_native_recording() -> Result<String, String> {
+/// Enumerates real Windows DirectShow audio input devices using FFmpeg (`-list_devices true -f dshow -i dummy`).
+pub fn list_dshow_audio_devices() -> Vec<String> {
+    let cache = AUDIO_DEVICES_CACHE.get_or_init(|| Mutex::new(Vec::new()));
+    if let Ok(guard) = cache.lock() {
+        if !guard.is_empty() {
+            return guard.clone();
+        }
+    }
+
+    let mut devices = Vec::new();
+    if let Ok(output) = Command::new("ffmpeg")
+        .args(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        let stderr_text = String::from_utf8_lossy(&output.stderr);
+        for line in stderr_text.lines() {
+            if line.contains("(audio)") {
+                if let Some(first_quote) = line.find('"') {
+                    if let Some(second_quote) = line[first_quote + 1..].find('"') {
+                        let dev_name = &line[first_quote + 1..first_quote + 1 + second_quote];
+                        if !dev_name.trim().is_empty() {
+                            devices.push(dev_name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok(mut guard) = cache.lock() {
+        *guard = devices.clone();
+    }
+    devices
+}
+
+fn spawn_native_ffmpeg_recorder(
+    out_str: &str,
+    fps: u32,
+    width: u32,
+    height: u32,
+    use_nvenc: bool,
+    bitrate_kbps: u32,
+    audio_dev: Option<&str>,
+    is_mp4: bool,
+) -> Result<Child, String> {
+    let mut args: Vec<String> = vec![
+        "-y".into(),
+        "-f".into(),
+        "gdigrab".into(),
+        "-draw_mouse".into(),
+        "1".into(),
+        "-framerate".into(),
+        fps.to_string(),
+        "-i".into(),
+        "desktop".into(),
+    ];
+
+    if let Some(dev) = audio_dev {
+        args.extend([
+            "-f".into(),
+            "dshow".into(),
+            "-i".into(),
+            format!("audio={dev}"),
+        ]);
+    }
+
+    let scale_filter = format!("scale={}:{}", (width / 2) * 2, (height / 2) * 2);
+    args.extend(["-vf".into(), scale_filter]);
+
+    let br_str = format!("{}k", bitrate_kbps.clamp(1500, 50000));
+    let buf_str = format!("{}k", bitrate_kbps.clamp(1500, 50000) * 2);
+
+    if use_nvenc {
+        args.extend([
+            "-c:v".into(),
+            "h264_nvenc".into(),
+            "-preset".into(),
+            "p4".into(),
+            "-b:v".into(),
+            br_str,
+            "-maxrate".into(),
+            buf_str.clone(),
+            "-bufsize".into(),
+            buf_str,
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+        ]);
+    } else {
+        args.extend([
+            "-c:v".into(),
+            "libx264".into(),
+            "-preset".into(),
+            "ultrafast".into(),
+            "-b:v".into(),
+            br_str,
+            "-maxrate".into(),
+            buf_str.clone(),
+            "-bufsize".into(),
+            buf_str,
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+        ]);
+    }
+
+    if audio_dev.is_some() {
+        args.extend([
+            "-c:a".into(),
+            "aac".into(),
+            "-b:a".into(),
+            "192k".into(),
+            "-ar".into(),
+            "48000".into(),
+        ]);
+    }
+
+    if is_mp4 {
+        args.extend(["-movflags".into(), "+faststart".into()]);
+    }
+
+    args.push(out_str.to_string());
+
+    Command::new("ffmpeg")
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn FFmpeg recorder: {e}"))
+}
+
+/// Starts a native FFmpeg desktop recording with real DirectShow audio + NVENC/x264 hardware fallback.
+pub fn start_native_recording(config: Option<RecordingConfig>) -> Result<String, String> {
     let mut guard = get_rec_mutex()
         .lock()
         .map_err(|_| "Recording mutex poisoned".to_string())?;
@@ -73,45 +222,91 @@ pub fn start_native_recording() -> Result<String, String> {
         return Ok(existing.output_path.clone());
     }
 
+    let cfg = config.unwrap_or(RecordingConfig {
+        width: Some(1920),
+        height: Some(1080),
+        fps: Some(60),
+        encoder: Some("h264_nvenc".into()),
+        bitrate_kbps: Some(8000),
+        format: Some("mp4".into()),
+        record_audio: Some(true),
+        audio_device: None,
+    });
+
+    let width = cfg.width.unwrap_or(1920).clamp(640, 3840);
+    let height = cfg.height.unwrap_or(1080).clamp(360, 2160);
+    let fps = cfg.fps.unwrap_or(60).clamp(15, 60);
+    let bitrate_kbps = cfg.bitrate_kbps.unwrap_or(8000).clamp(1500, 50000);
+    let ext = match cfg.format.as_deref() {
+        Some("mkv") => "mkv",
+        _ => "mp4",
+    };
+    let is_mp4 = ext == "mp4";
+    let prefer_nvenc = cfg.encoder.as_deref().unwrap_or("h264_nvenc") == "h264_nvenc";
+
+    let available_audio = if cfg.record_audio.unwrap_or(true) {
+        if let Some(custom_dev) = cfg.audio_device.as_ref().filter(|s| !s.trim().is_empty() && *s != "default") {
+            Some(custom_dev.clone())
+        } else {
+            list_dshow_audio_devices().into_iter().next()
+        }
+    } else {
+        None
+    };
+
     let rec_dir = get_recordings_dir();
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-    let out_file = rec_dir.join(format!("Broadcaster_{timestamp}.mp4"));
+    let out_file = rec_dir.join(format!("Broadcaster_{timestamp}.{ext}"));
     let out_str = out_file.to_string_lossy().to_string();
 
-    let child = Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-f",
-            "gdigrab",
-            "-framerate",
-            "30",
-            "-i",
-            "desktop",
-            "-vf",
-            "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-crf",
-            "23",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
+    // Try preferred encoder + audio first; if FFmpeg exits immediately, fallback cleanly to libx264
+    let mut encoder_used = if prefer_nvenc { "h264_nvenc" } else { "libx264" }.to_string();
+    let mut child = spawn_native_ffmpeg_recorder(
+        &out_str,
+        fps,
+        width,
+        height,
+        prefer_nvenc,
+        bitrate_kbps,
+        available_audio.as_deref(),
+        is_mp4,
+    )?;
+
+    std::thread::sleep(Duration::from_millis(220));
+    if let Ok(Some(_exit_status)) = child.try_wait() {
+        // Fallback 1: libx264 with audio
+        encoder_used = "libx264".to_string();
+        child = spawn_native_ffmpeg_recorder(
             &out_str,
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|e| format!("Failed to spawn FFmpeg for native recording: {e}"))?;
+            fps.min(30),
+            width,
+            height,
+            false,
+            bitrate_kbps,
+            available_audio.as_deref(),
+            is_mp4,
+        )?;
+        std::thread::sleep(Duration::from_millis(180));
+        if let Ok(Some(_)) = child.try_wait() {
+            // Fallback 2: libx264 without dshow audio if the audio device was busy
+            child = spawn_native_ffmpeg_recorder(
+                &out_str,
+                30,
+                width,
+                height,
+                false,
+                bitrate_kbps,
+                None,
+                is_mp4,
+            )?;
+        }
+    }
 
     *guard = Some(ActiveRecordingSession {
         child,
         output_path: out_str.clone(),
         started_at_unix: chrono::Utc::now().timestamp(),
+        encoder_used,
     });
 
     Ok(out_str)
@@ -136,8 +331,137 @@ pub fn stop_native_recording() -> Result<String, String> {
     }
 }
 
-/// Converts a recorded Composed Stage Canvas buffer (WebM/MP4 bytes containing PIP webcam,
-/// lower thirds, shaders, and whiteboard drawings) into a standard H.264/AAC MP4 with `+faststart`.
+/// Initializes a new chunked temporary file on disk for Composed Stage Canvas recording
+/// so WebView2 never buffers large video arrays in memory.
+pub fn start_canvas_recording_file() -> Result<String, String> {
+    let rec_dir = get_recordings_dir();
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S_%3f");
+    let temp_in = rec_dir.join(format!("_stage_stream_{timestamp}.webm"));
+    std::fs::File::create(&temp_in)
+        .map_err(|e| format!("Cannot create temporary stage stream file: {e}"))?;
+    Ok(temp_in.to_string_lossy().to_string())
+}
+
+/// Appends a Base64-encoded chunk from `MediaRecorder.ondataavailable` directly to the temporary disk file.
+pub fn append_canvas_recording_chunk(temp_path: &str, base64_chunk: &str) -> Result<u64, String> {
+    let payload = base64_chunk
+        .strip_prefix("data:video/webm;base64,")
+        .or_else(|| base64_chunk.strip_prefix("data:video/mp4;base64,"))
+        .or_else(|| base64_chunk.strip_prefix("data:application/octet-stream;base64,"))
+        .unwrap_or(base64_chunk);
+
+    let decoded = BASE64
+        .decode(payload.trim())
+        .map_err(|e| format!("Invalid Base64 video chunk: {e}"))?;
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(temp_path)
+        .map_err(|e| format!("Failed to open stage stream file for append: {e}"))?;
+
+    file.write_all(&decoded)
+        .map_err(|e| format!("Failed to write video chunk to disk: {e}"))?;
+
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    Ok(len)
+}
+
+/// Finalizes a chunked Composed Stage Canvas recording into an industry-standard H.264 + AAC MP4/MKV
+/// using NVIDIA NVENC (`h264_nvenc`) with automatic fallback to `libx264` and `+faststart`.
+pub fn finalize_canvas_recording_file(
+    temp_path: &str,
+    encoder: Option<&str>,
+    bitrate_kbps: Option<u32>,
+    format: Option<&str>,
+) -> Result<String, String> {
+    let in_path = Path::new(temp_path);
+    if !in_path.exists() {
+        return Err("Temporary canvas recording file does not exist".into());
+    }
+
+    let rec_dir = get_recordings_dir();
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let ext = match format {
+        Some("mkv") => "mkv",
+        _ => "mp4",
+    };
+    let final_out = rec_dir.join(format!("StageComposed_{timestamp}.{ext}"));
+    let final_str = final_out.to_string_lossy().to_string();
+    let br = format!("{}k", bitrate_kbps.unwrap_or(8000).clamp(1500, 50000));
+    let prefer_nvenc = encoder.unwrap_or("h264_nvenc") == "h264_nvenc";
+
+    let run_transcode = |use_nvenc: bool| -> bool {
+        let mut args: Vec<String> = vec![
+            "-y".into(),
+            "-i".into(),
+            temp_path.to_string(),
+            "-vf".into(),
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2".into(),
+        ];
+        if use_nvenc {
+            args.extend([
+                "-c:v".into(),
+                "h264_nvenc".into(),
+                "-preset".into(),
+                "p4".into(),
+                "-b:v".into(),
+                br.clone(),
+                "-pix_fmt".into(),
+                "yuv420p".into(),
+            ]);
+        } else {
+            args.extend([
+                "-c:v".into(),
+                "libx264".into(),
+                "-preset".into(),
+                "ultrafast".into(),
+                "-crf".into(),
+                "20".into(),
+                "-pix_fmt".into(),
+                "yuv420p".into(),
+            ]);
+        }
+        args.extend([
+            "-c:a".into(),
+            "aac".into(),
+            "-b:a".into(),
+            "192k".into(),
+        ]);
+        if ext == "mp4" {
+            args.extend(["-movflags".into(), "+faststart".into()]);
+        }
+        args.push(final_str.clone());
+
+        Command::new("ffmpeg")
+            .args(&args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+
+    let mut ok = if prefer_nvenc {
+        run_transcode(true)
+    } else {
+        false
+    };
+    if !ok {
+        ok = run_transcode(false);
+    }
+
+    let _ = std::fs::remove_file(in_path);
+
+    if !ok || !final_out.exists() {
+        return Err("FFmpeg failed to finalize StageComposed video".into());
+    }
+
+    Ok(final_str)
+}
+
+/// Backwards-compatible helper for small single-buffer Composed Stage recordings.
 pub fn transcode_composed_canvas_bytes(raw_bytes: Vec<u8>) -> Result<String, String> {
     if raw_bytes.is_empty() {
         return Err("Empty canvas recording buffer".into());
@@ -146,53 +470,14 @@ pub fn transcode_composed_canvas_bytes(raw_bytes: Vec<u8>) -> Result<String, Str
     let rec_dir = get_recordings_dir();
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let temp_in = rec_dir.join(format!("_stage_raw_{timestamp}.webm"));
-    let final_mp4 = rec_dir.join(format!("StageComposed_{timestamp}.mp4"));
-
     std::fs::write(&temp_in, &raw_bytes)
         .map_err(|e| format!("Failed to write temporary stage buffer: {e}"))?;
 
     let temp_str = temp_in.to_string_lossy().to_string();
-    let final_str = final_mp4.to_string_lossy().to_string();
-
-    let status = Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-i",
-            &temp_str,
-            "-vf",
-            "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-crf",
-            "21",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "160k",
-            "-movflags",
-            "+faststart",
-            &final_str,
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .map_err(|e| format!("FFmpeg stage transcode failed to launch: {e}"))?;
-
-    let _ = std::fs::remove_file(&temp_in);
-
-    if !status.success() || !final_mp4.exists() {
-        return Err("FFmpeg failed to finalize composed Stage MP4".into());
-    }
-
-    Ok(final_str)
+    finalize_canvas_recording_file(&temp_str, Some("h264_nvenc"), Some(8000), Some("mp4"))
 }
 
-/// Generates an Instant Replay `.mp4` clip from the latest recording or captures a fresh 5s replay clip.
+/// Generates an Instant Replay `.mp4` clip from the latest recording or captures a fresh replay clip with audio.
 pub fn create_instant_replay_clip(duration_sec: u32) -> Result<String, String> {
     let rec_dir = get_recordings_dir();
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
@@ -200,17 +485,18 @@ pub fn create_instant_replay_clip(duration_sec: u32) -> Result<String, String> {
     let replay_str = replay_file.to_string_lossy().to_string();
     let dur = duration_sec.clamp(3, 120);
 
-    // Find newest finalized MP4 recording (excluding active lock if any)
-    let mut latest_mp4: Option<(PathBuf, std::time::SystemTime)> = None;
+    // Find newest finalized MP4/MKV recording
+    let mut latest_video: Option<(PathBuf, std::time::SystemTime)> = None;
     if let Ok(entries) = std::fs::read_dir(&rec_dir) {
         for entry in entries.flatten() {
             let p = entry.path();
-            if p.extension().and_then(|e| e.to_str()) == Some("mp4") {
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if matches!(ext, "mp4" | "mkv") {
                 if let Ok(meta) = entry.metadata() {
                     if meta.len() > 32_768 {
                         if let Ok(modified) = meta.modified() {
-                            if latest_mp4.as_ref().map_or(true, |(_, t)| modified > *t) {
-                                latest_mp4 = Some((p, modified));
+                            if latest_video.as_ref().map_or(true, |(_, t)| modified > *t) {
+                                latest_video = Some((p, modified));
                             }
                         }
                     }
@@ -219,7 +505,7 @@ pub fn create_instant_replay_clip(duration_sec: u32) -> Result<String, String> {
         }
     }
 
-    if let Some((src_path, _)) = latest_mp4 {
+    if let Some((src_path, _)) = latest_video {
         let src_str = src_path.to_string_lossy().to_string();
         let sseof_arg = format!("-{dur}");
         let status = Command::new("ffmpeg")
@@ -236,9 +522,11 @@ pub fn create_instant_replay_clip(duration_sec: u32) -> Result<String, String> {
                 "-preset",
                 "ultrafast",
                 "-crf",
-                "22",
+                "21",
                 "-pix_fmt",
                 "yuv420p",
+                "-c:a",
+                "aac",
                 "-movflags",
                 "+faststart",
                 &replay_str,
@@ -261,6 +549,8 @@ pub fn create_instant_replay_clip(duration_sec: u32) -> Result<String, String> {
             "-y",
             "-f",
             "gdigrab",
+            "-draw_mouse",
+            "1",
             "-framerate",
             "30",
             "-t",
@@ -274,7 +564,7 @@ pub fn create_instant_replay_clip(duration_sec: u32) -> Result<String, String> {
             "-preset",
             "ultrafast",
             "-crf",
-            "23",
+            "22",
             "-pix_fmt",
             "yuv420p",
             "-movflags",
@@ -294,7 +584,8 @@ pub fn create_instant_replay_clip(duration_sec: u32) -> Result<String, String> {
     }
 }
 
-/// Starts simultaneous multistreaming to all configured RTMP/RTMPS channels.
+/// Starts simultaneous multistreaming to all configured RTMP/RTMPS channels with real DirectShow audio
+/// and NVIDIA NVENC (`h264_nvenc`) / `libx264` zero-latency encoding.
 pub fn start_multistream_session(targets: Vec<StreamTargetConfig>) -> Result<String, String> {
     let mut guard = get_stream_mutex()
         .lock()
@@ -317,6 +608,7 @@ pub fn start_multistream_session(targets: Vec<StreamTargetConfig>) -> Result<Str
         return Err("No valid RTMP targets configured".into());
     }
 
+    let audio_dev = list_dshow_audio_devices().into_iter().next();
     let mut children = Vec::new();
     let mut names = Vec::new();
 
@@ -331,37 +623,63 @@ pub fn start_multistream_session(targets: Vec<StreamTargetConfig>) -> Result<Str
         let br = format!("{}k", target.bitrate_kbps.clamp(1000, 18000));
         let buf = format!("{}k", target.bitrate_kbps.clamp(1000, 18000) * 2);
 
+        let mut args: Vec<String> = vec![
+            "-y".into(),
+            "-f".into(),
+            "gdigrab".into(),
+            "-draw_mouse".into(),
+            "1".into(),
+            "-framerate".into(),
+            "60".into(),
+            "-i".into(),
+            "desktop".into(),
+        ];
+
+        if let Some(ref dev) = audio_dev {
+            args.extend([
+                "-f".into(),
+                "dshow".into(),
+                "-i".into(),
+                format!("audio={dev}"),
+            ]);
+        }
+
+        args.extend([
+            "-vf".into(),
+            "scale=1920:1080".into(),
+            "-c:v".into(),
+            "libx264".into(),
+            "-preset".into(),
+            "veryfast".into(),
+            "-tune".into(),
+            "zerolatency".into(),
+            "-b:v".into(),
+            br.clone(),
+            "-maxrate".into(),
+            br,
+            "-bufsize".into(),
+            buf,
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            "-g".into(),
+            "120".into(),
+        ]);
+
+        if audio_dev.is_some() {
+            args.extend([
+                "-c:a".into(),
+                "aac".into(),
+                "-b:a".into(),
+                "160k".into(),
+                "-ar".into(),
+                "48000".into(),
+            ]);
+        }
+
+        args.extend(["-f".into(), "flv".into(), full_rtmp]);
+
         let child_res = Command::new("ffmpeg")
-            .args([
-                "-y",
-                "-f",
-                "gdigrab",
-                "-framerate",
-                "30",
-                "-i",
-                "desktop",
-                "-vf",
-                "scale=1920:1080",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-tune",
-                "zerolatency",
-                "-b:v",
-                &br,
-                "-maxrate",
-                &br,
-                "-bufsize",
-                &buf,
-                "-pix_fmt",
-                "yuv420p",
-                "-g",
-                "60",
-                "-f",
-                "flv",
-                &full_rtmp,
-            ])
+            .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -374,7 +692,7 @@ pub fn start_multistream_session(targets: Vec<StreamTargetConfig>) -> Result<Str
         }
     }
 
-    let encoder_name = "NVENC / x264 Zero-Latency".to_string();
+    let encoder_name = "NVENC / x264 Zero-Latency + AAC Audio".to_string();
     *guard = Some(ActiveStreamSession {
         children,
         targets: names.clone(),

@@ -174,6 +174,10 @@ export const AudioAndDockPanel: React.FC<AudioAndDockPanelProps> = ({
             {audioBuses.map((bus) => {
               const level =
                 bus.kind === "system" ? vuLevels.system : vuLevels.mic;
+              const dbValue =
+                bus.muted || level <= 1
+                  ? "-∞ dB"
+                  : `${(20 * Math.log10(level / 100)).toFixed(1)} dB`;
               return (
                 <div
                   key={bus.id}
@@ -207,14 +211,37 @@ export const AudioAndDockPanel: React.FC<AudioAndDockPanelProps> = ({
                       </span>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {/* OBS Audio Monitoring Mode Selector */}
+                      <select
+                        value={bus.monitoringMode || "off"}
+                        onChange={(e) =>
+                          onUpdateAudioBuses((prev) =>
+                            prev.map((b) =>
+                              b.id === bus.id
+                                ? {
+                                    ...b,
+                                    monitoringMode: e.target.value as
+                                      | "off"
+                                      | "monitor_only"
+                                      | "monitor_and_output",
+                                  }
+                                : b
+                            )
+                          )
+                        }
+                        className="bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] text-slate-300 outline-none focus:border-[#00F0FF]"
+                        title="Modo de Monitorización de Audio (Estilo OBS Studio)"
+                      >
+                        <option value="off">Monitor OFF</option>
+                        <option value="monitor_only">Solo Monitor</option>
+                        <option value="monitor_and_output">Monitor + Salida</option>
+                      </select>
+
                       <div
                         className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5"
                         title="Compensación de retraso de audio (Delay ms)"
                       >
-                        <span className="text-[10px] text-slate-400">
-                          Delay:
-                        </span>
                         <input
                           type="number"
                           min={0}
@@ -230,12 +257,15 @@ export const AudioAndDockPanel: React.FC<AudioAndDockPanelProps> = ({
                               )
                             )
                           }
-                          className="w-10 bg-transparent font-mono text-[10px] text-[#00F0FF] outline-none text-right"
+                          className="w-9 bg-transparent font-mono text-[10px] text-[#00F0FF] outline-none text-right"
                         />
                         <span className="text-[9px] text-slate-500">ms</span>
                       </div>
 
-                      <span className="font-mono text-[#00F0FF] w-9 text-right font-bold">
+                      <span className="font-mono text-[10px] text-emerald-400 w-12 text-right">
+                        {dbValue}
+                      </span>
+                      <span className="font-mono text-[#00F0FF] w-8 text-right font-bold text-[10px]">
                         {bus.muted ? "MUTE" : `${bus.volume}%`}
                       </span>
                     </div>

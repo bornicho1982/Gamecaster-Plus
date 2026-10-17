@@ -1,10 +1,12 @@
 use crate::engine::{
     telemetry::{sample_hardware_telemetry, HardwareTelemetry},
     video_encoder::{
-        create_instant_replay_clip, express_cut_video, get_base_media_dir, get_presentations_dir,
-        get_recordings_dir, get_screenshots_dir, remux_and_repair_mp4, start_multistream_session,
-        start_native_recording, stop_multistream_session, stop_native_recording,
-        transcode_composed_canvas_bytes, StreamTargetConfig,
+        append_canvas_recording_chunk, create_instant_replay_clip, express_cut_video,
+        finalize_canvas_recording_file, get_base_media_dir, get_presentations_dir,
+        get_recordings_dir, get_screenshots_dir, list_dshow_audio_devices, remux_and_repair_mp4,
+        start_canvas_recording_file, start_multistream_session, start_native_recording,
+        stop_multistream_session, stop_native_recording, transcode_composed_canvas_bytes,
+        RecordingConfig, StreamTargetConfig,
     },
     wgc_capture::{
         capture_desktop_jpeg_base64, capture_window_jpeg_base64, enumerate_visible_windows,
@@ -39,8 +41,16 @@ pub fn get_hardware_telemetry() -> HardwareTelemetry {
 }
 
 #[tauri::command]
-pub fn capture_live_frame(width: Option<u32>, height: Option<u32>) -> Result<String, String> {
-    capture_desktop_jpeg_base64(width.unwrap_or(960), height.unwrap_or(540))
+pub fn capture_live_frame(
+    width: Option<u32>,
+    height: Option<u32>,
+    show_cursor: Option<bool>,
+) -> Result<String, String> {
+    capture_desktop_jpeg_base64(
+        width.unwrap_or(960),
+        height.unwrap_or(540),
+        show_cursor.unwrap_or(true),
+    )
 }
 
 #[tauri::command]
@@ -48,8 +58,16 @@ pub fn capture_window_frame(
     hwnd: isize,
     width: Option<u32>,
     height: Option<u32>,
+    show_cursor: Option<bool>,
+    fallback_title: Option<String>,
 ) -> Result<String, String> {
-    capture_window_jpeg_base64(hwnd, width.unwrap_or(960), height.unwrap_or(540))
+    capture_window_jpeg_base64(
+        hwnd,
+        width.unwrap_or(960),
+        height.unwrap_or(540),
+        show_cursor.unwrap_or(true),
+        fallback_title.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -63,19 +81,49 @@ pub fn get_active_window_info() -> Option<WindowInfo> {
 }
 
 #[tauri::command]
+pub fn list_audio_capture_devices() -> Vec<String> {
+    list_dshow_audio_devices()
+}
+
+#[tauri::command]
 pub fn take_screenshot() -> Result<String, String> {
     let dir = get_screenshots_dir();
     save_fullscreen_screenshot(&dir)
 }
 
 #[tauri::command]
-pub fn start_recording() -> Result<String, String> {
-    start_native_recording()
+pub fn start_recording(config: Option<RecordingConfig>) -> Result<String, String> {
+    start_native_recording(config)
 }
 
 #[tauri::command]
 pub fn stop_recording() -> Result<String, String> {
     stop_native_recording()
+}
+
+#[tauri::command]
+pub fn init_canvas_recording() -> Result<String, String> {
+    start_canvas_recording_file()
+}
+
+#[tauri::command]
+pub fn append_canvas_chunk(temp_path: String, base64_chunk: String) -> Result<u64, String> {
+    append_canvas_recording_chunk(&temp_path, &base64_chunk)
+}
+
+#[tauri::command]
+pub fn finalize_canvas_recording(
+    temp_path: String,
+    encoder: Option<String>,
+    bitrate_kbps: Option<u32>,
+    format: Option<String>,
+) -> Result<String, String> {
+    finalize_canvas_recording_file(
+        &temp_path,
+        encoder.as_deref(),
+        bitrate_kbps,
+        format.as_deref(),
+    )
 }
 
 #[tauri::command]

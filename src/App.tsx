@@ -364,12 +364,19 @@ export const App: React.FC = () => {
     gpu_vram_used_mb: 1420,
     gpu_vram_total_mb: 12288,
     gpu_utilization_percent: 11,
+    disk_free_gb: 128.5,
   });
 
-  // Refs for Master PGM Canvas & Composed Canvas Recorder
+  // Refs for Master PGM Canvas, Web Audio Mixing Graph & Chunked Disk Recorder
   const pgmCanvasRef = useRef<HTMLCanvasElement>(null);
   const canvasRecorderRef = useRef<MediaRecorder | null>(null);
-  const canvasChunksRef = useRef<Blob[]>([]);
+  const activeTempFileRef = useRef<string | null>(null);
+  const chunkWriteChainRef = useRef<Promise<void>>(Promise.resolve());
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const mixedAudioDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const micOutGainRef = useRef<GainNode | null>(null);
+  const micMonitorGainRef = useRef<GainNode | null>(null);
+  const micFilterRef = useRef<BiquadFilterNode | null>(null);
   const fileInputImageRef = useRef<HTMLInputElement | null>(null);
   const fileInputMediaRef = useRef<HTMLInputElement | null>(null);
 
@@ -456,18 +463,24 @@ export const App: React.FC = () => {
     const pollCapture = async () => {
       if (cancelled) return;
       try {
+        const allSources = [
+          ...activeScene.sources,
+          ...(studioMode ? previewScene.sources : []),
+        ];
+        const screenSrc = allSources.find(
+          (s) => s.type === "screen" && s.layout.visible
+        );
+        const showDesktopCursor = screenSrc ? screenSrc.showCursor !== false : true;
+
         const frame = await invoke<string>("capture_live_frame", {
           width: 960,
           height: 540,
+          showCursor: showDesktopCursor,
         });
         if (!cancelled && frame.startsWith("data:image/jpeg;base64,")) {
           setDesktopFrame(frame);
         }
 
-        const allSources = [
-          ...activeScene.sources,
-          ...(studioMode ? previewScene.sources : []),
-        ];
         const winSources = allSources.filter(
           (s) => s.type === "window" && s.layout.visible && s.windowHwnd
         );
@@ -477,6 +490,8 @@ export const App: React.FC = () => {
               hwnd: ws.windowHwnd,
               width: 960,
               height: 540,
+              showCursor: ws.showCursor !== false,
+              fallbackTitle: ws.windowTitle || null,
             });
             if (!cancelled && wFrame.startsWith("data:image/jpeg;base64,")) {
               setWindowFramesMap((prev) => ({
@@ -550,7 +565,7 @@ export const App: React.FC = () => {
     refreshOpenWindows,
   ]);
 
-  // Real Web Audio API Microphone Analyzer + System Audio Meter
+  // Real Web Audio API DSP Mixing Graph (Microphone + Compressor + High-Pass Noise Gate + Audio Monitoring + Stream Destination)
   useEffect(() => {
     let audioCtx: AudioContext | null = null;
     let analyser: AnalyserNode | null = null;
@@ -560,8 +575,17 @@ export const App: React.FC = () => {
     const audioConstraints: MediaStreamConstraints = {
       audio:
         globalSettings.micDeviceId && globalSettings.micDeviceId !== "default"
-          ? { deviceId: { exact: globalSettings.micDeviceId } }
-          : true,
+          ? {
+              deviceId: { exact: globalSettings.micDeviceId },
+              echoCancellation: true,
+              noiseSuppression: globalSettings.aiNoiseSuppression,
+              autoGainControl: true,
+            }
+          : {
+              echoCancellation: true,
+              noiseSuppression: globalSettings.aiNoiseSuppression,
+              autoGainControl: true,
+            },
       video: false,
     };
 
@@ -569,21 +593,59 @@ export const App: React.FC = () => {
       ?.getUserMedia(audioConstraints)
       .then((stream) => {
         micStream = stream;
-        audioCtx = new AudioContext();
+        audioCtx = new AudioContext({ sampleRate: 48000 });
+        audioCtxRef.current = audioCtx;
+
         const source = audioCtx.createMediaStreamSource(stream);
+
+        // OBS-style Vocal High-Pass Filter (cuts low rumble below 85Hz when Noise Gate is active)
+        const filterNode = audioCtx.createBiquadFilter();
+        filterNode.type = "highpass";
+        filterNode.frequency.value = 85;
+        micFilterRef.current = filterNode;
+
+        // Broadcast Dynamics Compressor (prevents clipping on loud peaks)
+        const compressor = audioCtx.createDynamicsCompressor();
+        compressor.threshold.value = -18;
+        compressor.knee.value = 12;
+        compressor.ratio.value = 4;
+        compressor.attack.value = 0.003;
+        compressor.release.value = 0.25;
+
+        // Output Gain (feeds recording/stream destination)
+        const outGain = audioCtx.createGain();
+        outGain.gain.value = 0.9;
+        micOutGainRef.current = outGain;
+
+        // Monitor Gain (feeds speakers/headphones when Audio Monitoring is enabled)
+        const monitorGain = audioCtx.createGain();
+        monitorGain.gain.value = 0.0;
+        micMonitorGainRef.current = monitorGain;
+
         analyser = audioCtx.createAnalyser();
         analyser.fftSize = 256;
-        source.connect(analyser);
+
+        const streamDest = audioCtx.createMediaStreamDestination();
+        mixedAudioDestRef.current = streamDest;
+
+        source.connect(filterNode);
+        filterNode.connect(compressor);
+        compressor.connect(analyser);
+        compressor.connect(outGain);
+        outGain.connect(streamDest);
+
+        compressor.connect(monitorGain);
+        monitorGain.connect(audioCtx.destination);
       })
       .catch(() => {});
 
     timerId = setInterval(() => {
-      let micVal = 8;
+      let micVal = 6;
       if (analyser) {
         const data = new Uint8Array(analyser.frequencyBinCount);
         analyser.getByteFrequencyData(data);
         const avg = data.reduce((a, b) => a + b, 0) / data.length;
-        micVal = Math.min(100, Math.round(avg * 1.6));
+        micVal = Math.min(100, Math.round(avg * 1.65));
       }
       setVuLevels((prev) => {
         const sysBus = audioBuses.find((b) => b.kind === "system");
@@ -601,14 +663,38 @@ export const App: React.FC = () => {
           mic: finalMic,
         };
       });
-    }, 120);
+    }, 110);
 
     return () => {
       clearInterval(timerId);
       micStream?.getTracks().forEach((t) => t.stop());
       audioCtx?.close().catch(() => {});
     };
-  }, [audioBuses, globalSettings.micDeviceId]);
+  }, [globalSettings.micDeviceId, globalSettings.aiNoiseSuppression]);
+
+  // Synchronize live AudioBusChannel fader, mute, noise gate & OBS Monitoring mode with Web Audio DSP nodes
+  useEffect(() => {
+    const micBus = audioBuses.find((b) => b.kind === "mic");
+    if (!micBus) return;
+
+    const linearVol = (micBus.volume / 100) * Math.pow(10, (micBus.gainDb || 0) / 20);
+    const monMode = micBus.monitoringMode || "off";
+
+    if (micOutGainRef.current) {
+      // If muted or "monitor_only", mute output to recording/stream
+      const sendToOutput = !micBus.muted && monMode !== "monitor_only";
+      micOutGainRef.current.gain.value = sendToOutput ? linearVol : 0;
+    }
+    if (micMonitorGainRef.current) {
+      const sendToMonitor =
+        !micBus.muted &&
+        (monMode === "monitor_only" || monMode === "monitor_and_output");
+      micMonitorGainRef.current.gain.value = sendToMonitor ? linearVol : 0;
+    }
+    if (micFilterRef.current) {
+      micFilterRef.current.frequency.value = micBus.noiseSuppression ? 95 : 20;
+    }
+  }, [audioBuses]);
 
   // Session Timer for Recording / Streaming (pauses when recording is paused)
   useEffect(() => {
@@ -681,66 +767,134 @@ export const App: React.FC = () => {
     [editableScene]
   );
 
-  // UNIFIED MASTER RECORDING BUTTON (Supports Composed Canvas MP4 or Native Desktop FFmpeg)
+  // Helper to convert ArrayBuffer to Base64 without stack overflow
+  const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+  };
+
+  // UNIFIED MASTER RECORDING BUTTON (Supports Chunked Composed Canvas MP4/MKV with Audio or Native Desktop FFmpeg with DirectShow Audio)
   const handleToggleMasterRecord = useCallback(async () => {
     if (!isRecording) {
       const mode = globalSettings.recordingMode;
       if (mode === "native_desktop") {
         try {
-          const path = await invoke<string>("start_recording");
+          const [wStr, hStr] = globalSettings.outputResolution.split("x");
+          const path = await invoke<string>("start_recording", {
+            config: {
+              width: Number(wStr) || 1920,
+              height: Number(hStr) || 1080,
+              fps: globalSettings.fps || 60,
+              encoder: globalSettings.videoEncoder,
+              bitrate_kbps: globalSettings.recordingBitrateKbps || 12000,
+              format: globalSettings.recordingFormat,
+              record_audio: true,
+              audio_device: null,
+            },
+          });
           setActiveRecordingEngine("native_desktop");
           setIsRecording(true);
           setIsRecordingPaused(false);
-          showToast(`🔴 Grabando Pantalla Directa en: ${path}`);
+          showToast(
+            `🔴 Grabando Pantalla Directa + Audio (${globalSettings.videoEncoder.toUpperCase()}) en: ${path}`
+          );
         } catch (e) {
           showToast(`Error de grabación: ${String(e)}`);
         }
       } else {
-        // Default: Composed Stage Canvas Recording
+        // Default: Composed Stage Canvas Recording with Real Web Audio Track + Chunked Disk Streaming
         const canvas = pgmCanvasRef.current;
         if (!canvas) return;
         try {
-          const stream = canvas.captureStream(globalSettings.fps || 60);
+          if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+            await audioCtxRef.current.resume().catch(() => {});
+          }
+
+          const tempPath = await invoke<string>("init_canvas_recording");
+          activeTempFileRef.current = tempPath;
+          chunkWriteChainRef.current = Promise.resolve();
+
+          const videoStream = canvas.captureStream(globalSettings.fps || 60);
+          const combinedTracks: MediaStreamTrack[] = [
+            ...videoStream.getVideoTracks(),
+          ];
+          if (mixedAudioDestRef.current) {
+            const audioTracks = mixedAudioDestRef.current.stream.getAudioTracks();
+            if (audioTracks.length > 0) {
+              combinedTracks.push(...audioTracks);
+            }
+          }
+          const combinedStream = new MediaStream(combinedTracks);
+
           const mimeType = MediaRecorder.isTypeSupported(
-            "video/webm;codecs=vp9"
+            "video/webm;codecs=vp9,opus"
           )
-            ? "video/webm;codecs=vp9"
+            ? "video/webm;codecs=vp9,opus"
+            : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
+            ? "video/webm;codecs=vp8,opus"
             : "video/webm";
-          const recorder = new MediaRecorder(stream, {
+
+          const recorder = new MediaRecorder(combinedStream, {
             mimeType,
             videoBitsPerSecond:
               (globalSettings.recordingBitrateKbps || 12000) * 1000,
+            audioBitsPerSecond: 192000,
           });
-          canvasChunksRef.current = [];
+
           recorder.ondataavailable = (ev) => {
-            if (ev.data && ev.data.size > 0) {
-              canvasChunksRef.current.push(ev.data);
+            if (ev.data && ev.data.size > 0 && activeTempFileRef.current) {
+              const targetFile = activeTempFileRef.current;
+              const blobChunk = ev.data;
+              chunkWriteChainRef.current = chunkWriteChainRef.current
+                .then(async () => {
+                  const buf = await blobChunk.arrayBuffer();
+                  const b64 = arrayBufferToBase64(buf);
+                  await invoke("append_canvas_chunk", {
+                    tempPath: targetFile,
+                    base64Chunk: b64,
+                  });
+                })
+                .catch(() => {});
             }
           };
+
           recorder.onstop = async () => {
-            const blob = new Blob(canvasChunksRef.current, { type: mimeType });
-            const arrayBuf = await blob.arrayBuffer();
-            const uint8 = Array.from(new Uint8Array(arrayBuf));
+            const targetFile = activeTempFileRef.current;
+            activeTempFileRef.current = null;
+            if (!targetFile) return;
+
             showToast(
-              "⏳ Finalizando y optimizando vídeo MP4 H.264 (+faststart)..."
+              `⏳ Finalizando y codificando vídeo (${globalSettings.videoEncoder.toUpperCase()} + Audio AAC)...`
             );
             try {
-              const finalMp4 = await invoke<string>(
-                "save_composed_canvas_recording",
-                { bytes: uint8 }
+              await chunkWriteChainRef.current;
+              const finalVideo = await invoke<string>(
+                "finalize_canvas_recording",
+                {
+                  tempPath: targetFile,
+                  encoder: globalSettings.videoEncoder,
+                  bitrateKbps: globalSettings.recordingBitrateKbps || 12000,
+                  format: globalSettings.recordingFormat || "mp4",
+                }
               );
-              showToast(`✅ Grabación guardada en disco: ${finalMp4}`);
+              showToast(`✅ Grabación con Audio guardada en disco: ${finalVideo}`);
             } catch (err) {
-              showToast(`Error al guardar MP4: ${String(err)}`);
+              showToast(`Error al finalizar grabación: ${String(err)}`);
             }
           };
-          recorder.start(250);
+
+          recorder.start(500);
           canvasRecorderRef.current = recorder;
           setActiveRecordingEngine("composed_canvas");
           setIsRecording(true);
           setIsRecordingPaused(false);
           showToast(
-            "🔴 Grabando Escena Compuesta en Vivo (Juego + Cámara + Capas)..."
+            "🔴 Grabando Escena Compuesta + Audio Mezclado en Vivo (Escritura Directa a Disco)..."
           );
         } catch (e) {
           showToast(`Error al iniciar grabación: ${String(e)}`);
@@ -754,7 +908,7 @@ export const App: React.FC = () => {
           setIsRecording(false);
           setIsRecordingPaused(false);
           setActiveRecordingEngine(null);
-          showToast(`✅ Grabación MP4 finalizada y guardada: ${savedPath}`);
+          showToast(`✅ Grabación finalizada y guardada: ${savedPath}`);
         } catch (e) {
           showToast(`Error al detener grabación: ${String(e)}`);
         }
@@ -1537,6 +1691,76 @@ export const App: React.FC = () => {
           onNotify={showToast}
         />
       </section>
+
+      {/* OBS STUDIO + XSPLIT BROADCAST HEALTH & DIAGNOSTICS FOOTER BAR */}
+      <footer className="h-7 px-3.5 bg-[#060810] border-t border-slate-800/90 flex items-center justify-between text-[11px] font-mono text-slate-400 shrink-0">
+        <div className="flex items-center gap-4">
+          <span className="flex items-center gap-1.5">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                isRecording || isStreaming
+                  ? "bg-rose-500 animate-ping"
+                  : "bg-emerald-400"
+              }`}
+            />
+            <strong className="text-slate-200">
+              {isRecording
+                ? `GRABANDO (${formatTimer(sessionSeconds)})`
+                : isStreaming
+                ? `EN DIRECTO (${formatTimer(sessionSeconds)})`
+                : "MOTOR LISTO"}
+            </strong>
+          </span>
+          <span>
+            Codificador:{" "}
+            <strong className="text-[#00F0FF]">
+              {globalSettings.videoEncoder === "h264_nvenc"
+                ? "NVIDIA NVENC H.264"
+                : "x264 (CPU)"}
+            </strong>
+          </span>
+          <span>
+            Salida:{" "}
+            <strong className="text-slate-200">
+              {globalSettings.outputResolution} @ {globalSettings.fps} FPS
+            </strong>{" "}
+            ({(1000 / (globalSettings.fps || 60)).toFixed(1)} ms/frame)
+          </span>
+          <span>
+            Bitrate:{" "}
+            <strong className="text-emerald-400">
+              {globalSettings.recordingBitrateKbps} kbps
+            </strong>
+          </span>
+        </div>
+
+        <div className="flex items-center gap-4">
+          <span>
+            Audio:{" "}
+            <strong className="text-[#00F0FF]">
+              WASAPI + WebAudio DSP 48kHz
+            </strong>
+          </span>
+          <span>
+            CPU:{" "}
+            <strong className="text-slate-200">
+              {telemetry.cpu_usage_percent.toFixed(1)}%
+            </strong>
+          </span>
+          <span>
+            GPU:{" "}
+            <strong className="text-slate-200">
+              {telemetry.gpu_vram_used_mb} MB VRAM
+            </strong>
+          </span>
+          <span>
+            Disco Libre:{" "}
+            <strong className="text-emerald-400">
+              {(telemetry.disk_free_gb ?? 120).toFixed(1)} GB
+            </strong>
+          </span>
+        </div>
+      </footer>
 
       {/* FLOATING 4-TAB SOURCE PROPERTIES INSPECTOR */}
       {inspectorTarget && (

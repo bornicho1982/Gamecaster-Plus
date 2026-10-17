@@ -160,6 +160,7 @@ export interface AudioBusChannel {
   monoMix: boolean;
   noiseSuppression: boolean;
   noiseGateThreshold: number; // -60..0 dB
+  monitoringMode?: "off" | "monitor_only" | "monitor_and_output";
   tracks: boolean[]; // 6 tracks [Track 1 .. Track 6]
 }
 
@@ -212,6 +213,7 @@ export interface HardwareTelemetry {
   gpu_vram_used_mb: number;
   gpu_vram_total_mb: number;
   gpu_utilization_percent: number;
+  disk_free_gb?: number;
 }
 
 export interface MediaFileEntry {

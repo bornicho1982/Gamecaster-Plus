@@ -286,7 +286,7 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
     return filters.length > 0 ? filters.join(" ") : "none";
   };
 
-  // Apply Chroma Key pixel processing ONLY when explicitly enabled by user (Golden Rule #3)
+  // Apply OBS Studio YCbCr Chroma Key V2 + Spill Suppression ONLY when explicitly enabled by user (Golden Rule #3)
   const getChromaKeyedDrawable = (
     videoEl: HTMLVideoElement,
     src: StageSource
@@ -302,8 +302,8 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
       chromaOffscreenRef.current = document.createElement("canvas");
     }
     const off = chromaOffscreenRef.current;
-    const w = 480;
-    const h = 270;
+    const w = 640;
+    const h = 360;
     if (off.width !== w || off.height !== h) {
       off.width = w;
       off.height = h;
@@ -315,39 +315,60 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
     const frame = octx.getImageData(0, 0, w, h);
     const data = frame.data;
 
-    let targetR = 0;
-    let targetG = 255;
-    let targetB = 0;
+    let keyR = 0;
+    let keyG = 255;
+    let keyB = 0;
     if (src.colorKey.chromaKey.keyColor === "blue") {
-      targetR = 0;
-      targetG = 60;
-      targetB = 255;
+      keyR = 0;
+      keyG = 70;
+      keyB = 255;
     } else if (src.colorKey.chromaKey.keyColor === "red") {
-      targetR = 255;
-      targetG = 20;
-      targetB = 20;
+      keyR = 255;
+      keyG = 25;
+      keyB = 25;
     } else if (src.colorKey.chromaKey.keyColor === "custom") {
       const hex = src.colorKey.chromaKey.customHex.replace("#", "");
       if (hex.length === 6) {
-        targetR = parseInt(hex.slice(0, 2), 16) || 0;
-        targetG = parseInt(hex.slice(2, 4), 16) || 255;
-        targetB = parseInt(hex.slice(4, 6), 16) || 0;
+        keyR = parseInt(hex.slice(0, 2), 16) || 0;
+        keyG = parseInt(hex.slice(2, 4), 16) || 255;
+        keyB = parseInt(hex.slice(4, 6), 16) || 0;
       }
     }
 
-    const thresh = (src.colorKey.chromaKey.threshold / 100) * 220;
-    const smooth = (src.colorKey.chromaKey.smoothing / 100) * 65 + 1;
+    // OBS chroma_key_filter_v2.effect YCbCr conversion coefficients
+    const rgbToCb = (r: number, g: number, b: number) =>
+      (-0.100644 * r - 0.338572 * g + 0.439216 * b) / 255.0 + 0.501961;
+    const rgbToCr = (r: number, g: number, b: number) =>
+      (0.439216 * r - 0.398942 * g - 0.040274 * b) / 255.0 + 0.501961;
+
+    const targetCb = rgbToCb(keyR, keyG, keyB);
+    const targetCr = rgbToCr(keyR, keyG, keyB);
+
+    const similarity = Math.max(0.02, (src.colorKey.chromaKey.threshold / 100) * 0.52);
+    const smoothness = Math.max(0.01, (src.colorKey.chromaKey.smoothing / 100) * 0.25);
+    const spillReduction = Math.max(0.01, (src.colorKey.chromaKey.exposure / 100) * 0.35);
 
     for (let i = 0; i < data.length; i += 4) {
-      const dr = data[i] - targetR;
-      const dg = data[i + 1] - targetG;
-      const db = data[i + 2] - targetB;
-      const dist = Math.sqrt(dr * dr + dg * dg + db * db);
-      if (dist < thresh) {
-        data[i + 3] = 0;
-      } else if (dist < thresh + smooth) {
-        data[i + 3] = Math.round(((dist - thresh) / smooth) * 255);
-      }
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+
+      const cb = rgbToCb(r, g, b);
+      const cr = rgbToCr(r, g, b);
+      const dCb = targetCb - cb;
+      const dCr = targetCr - cr;
+      const chromaDist = Math.sqrt(dCb * dCb + dCr * dCr);
+
+      const baseMask = chromaDist - similarity;
+      const fullMask = Math.pow(Math.max(0, Math.min(1, baseMask / smoothness)), 1.5);
+      const spillVal = Math.pow(Math.max(0, Math.min(1, baseMask / spillReduction)), 1.5);
+
+      // OBS Spill Suppression: desaturate green/key fringe toward Rec.709 luminance
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      data[i] = Math.round(lum * (1 - spillVal) + r * spillVal);
+      data[i + 1] = Math.round(lum * (1 - spillVal) + g * spillVal);
+      data[i + 2] = Math.round(lum * (1 - spillVal) + b * spillVal);
+      data[i + 3] = Math.round(fullMask * 255);
     }
     octx.putImageData(frame, 0, 0);
     return off;

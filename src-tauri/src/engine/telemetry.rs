@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
-use sysinfo::System;
+use sysinfo::{Disks, System};
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -19,6 +19,7 @@ pub struct HardwareTelemetry {
     pub gpu_vram_used_mb: u32,
     pub gpu_vram_total_mb: u32,
     pub gpu_utilization_percent: u32,
+    pub disk_free_gb: f32,
 }
 
 fn get_system() -> &'static Mutex<System> {
@@ -72,6 +73,18 @@ pub fn sample_hardware_telemetry() -> HardwareTelemetry {
         ram_total_gb = (sys.total_memory() as f64 / 1_073_741_824.0).max(1.0) as f32;
     }
 
+    // Query free disk space on C:\ (or primary drive) for OBS-style Stats Dock
+    let mut disk_free_gb = 100.0f32;
+    let disks = Disks::new_with_refreshed_list();
+    if let Some(d) = disks
+        .list()
+        .iter()
+        .find(|d| d.mount_point().to_string_lossy().to_uppercase().starts_with("C:"))
+        .or_else(|| disks.list().first())
+    {
+        disk_free_gb = (d.available_space() as f64 / 1_073_741_824.0) as f32;
+    }
+
     let gpu_name = detect_gpu_name();
     let mut vram_used = 1420u32;
     let mut vram_total = 12288u32;
@@ -107,5 +120,6 @@ pub fn sample_hardware_telemetry() -> HardwareTelemetry {
         gpu_vram_used_mb: vram_used,
         gpu_vram_total_mb: vram_total,
         gpu_utilization_percent: gpu_util,
+        disk_free_gb: (disk_free_gb * 10.0).round() / 10.0,
     }
 }
