@@ -114,6 +114,7 @@ export interface StageSource {
   colorKey: SourceColorKey;
   effects: SourceEffects;
   // Type-specific payloads
+  monitorIndex?: number;
   windowHwnd?: number;
   windowTitle?: string;
   cameraDeviceId?: string;
@@ -224,6 +225,16 @@ export interface MediaFileEntry {
   kind: "video" | "screenshot";
 }
 
+export interface MonitorInfo {
+  index: number;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  is_primary: boolean;
+}
+
 export interface WindowInfo {
   hwnd: number;
   title: string;
@@ -267,7 +278,7 @@ export interface GlobalSettings {
   // 4. Recording
   recordingMode: "composed_canvas" | "native_desktop";
   recordingFormat: "mp4" | "mkv";
-  videoEncoder: "h264_nvenc" | "libx264";
+  videoEncoder: "h264_nvenc" | "h264_mf" | "libx264";
   recordingBitrateKbps: number;
   faststartOptimization: boolean;
   // 5. Streaming / IRC Chat
@@ -278,7 +289,7 @@ export interface GlobalSettings {
 
 export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
   language: "es",
-  excludeFromCapture: true,
+  excludeFromCapture: false,
   snapToGrid: true,
   confirmBeforeStopStream: true,
   outputResolution: "1920x1080",
@@ -368,6 +379,7 @@ export function createDefaultSource(
     name,
     type,
     zOrder,
+    monitorIndex: type === "screen" ? 0 : undefined,
     layout: {
       x: isFullStage ? 0 : isLowerThird ? 64 : isText ? 120 : isCamera ? 1510 : 1280,
       y: isFullStage ? 0 : isLowerThird ? 875 : isText ? 80 : isCamera ? 828 : 660,

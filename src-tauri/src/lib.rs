@@ -19,13 +19,14 @@ pub fn run() {
                 let _ = win.set_focus();
             }
 
-            // Exclude Gamecaster Plus window from desktop screen capture by default (prevents infinite mirror effect)
-            let _ = engine::wgc_capture::set_process_windows_exclude_from_capture(true);
+            // Keep WDA_EXCLUDEFROMCAPTURE disabled by default so GDI/gdigrab does not render a solid black rectangle
+            let _ = engine::wgc_capture::set_process_windows_exclude_from_capture(false);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::set_exclude_from_capture,
             commands::get_hardware_telemetry,
+            commands::list_monitors,
             commands::capture_live_frame,
             commands::capture_window_frame,
             commands::list_open_windows,

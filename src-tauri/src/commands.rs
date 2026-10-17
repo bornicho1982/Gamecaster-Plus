@@ -9,9 +9,9 @@ use crate::engine::{
         RecordingConfig, StreamTargetConfig,
     },
     wgc_capture::{
-        capture_desktop_jpeg_base64, capture_window_jpeg_base64, enumerate_visible_windows,
-        get_foreground_window_info, save_fullscreen_screenshot,
-        set_process_windows_exclude_from_capture, WindowInfo,
+        capture_desktop_jpeg_base64, capture_window_jpeg_base64, enumerate_monitors,
+        enumerate_visible_windows, get_foreground_window_info, save_fullscreen_screenshot,
+        set_process_windows_exclude_from_capture, MonitorInfo, WindowInfo,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -41,15 +41,22 @@ pub fn get_hardware_telemetry() -> HardwareTelemetry {
 }
 
 #[tauri::command]
+pub fn list_monitors() -> Vec<MonitorInfo> {
+    enumerate_monitors()
+}
+
+#[tauri::command]
 pub fn capture_live_frame(
     width: Option<u32>,
     height: Option<u32>,
     show_cursor: Option<bool>,
+    monitor_index: Option<usize>,
 ) -> Result<String, String> {
     capture_desktop_jpeg_base64(
         width.unwrap_or(960),
         height.unwrap_or(540),
         show_cursor.unwrap_or(true),
+        monitor_index.unwrap_or(0),
     )
 }
 

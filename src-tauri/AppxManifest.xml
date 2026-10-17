@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  IgnorableNamespaces="uap rescap desktop">
+
+  <Identity
+    Name="BornichoStudio.GamecasterPlus"
+    Publisher="CN=BornichoStudio"
+    Version="4.6.0.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Gamecaster Plus — Broadcast Studio</DisplayName>
+    <PublisherDisplayName>Bornicho Studio</PublisherDisplayName>
+    <Logo>icons\StoreLogo.png</Logo>
+    <Description>Estudio profesional de grabación 4K60, composición de escenas en tiempo real, Chroma Key YCbCr, pizarra táctica y retransmisión multicanal RTMP.</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="es-ES" />
+    <Resource Language="en-US" />
+  </Resources>
+
+  <Applications>
+    <Application
+      Id="GamecasterPlusApp"
+      Executable="gamecaster-plus.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Gamecaster Plus"
+        Description="Estudio Profesional de Grabación y Retransmisión en Directo"
+        BackgroundColor="#060911"
+        Square150x150Logo="icons\Square150x150Logo.png"
+        Square44x44Logo="icons\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="icons\Square310x310Logo.png" Square310x310Logo="icons\Square310x310Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <Capability Name="internetClient" />
+    <rescap:Capability Name="runFullTrust" />
+    <DeviceCapability Name="webcam" />
+    <DeviceCapability Name="microphone" />
+  </Capabilities>
+</Package>

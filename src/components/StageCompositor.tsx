@@ -74,10 +74,11 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
   pgmCanvasRef,
 }) => {
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pgmGizmoCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const snapshotCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const chromaOffscreenRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Media element caches
+  // Double-buffered media element caches (prevents canvas flicker while decoding)
   const desktopImgRef = useRef<HTMLImageElement | null>(null);
   const windowImgsRef = useRef<Record<number, HTMLImageElement>>({});
   const customImgsRef = useRef<Record<string, HTMLImageElement>>({});
@@ -104,27 +105,31 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
   const stageW = isPortraitCanvas ? 1080 : 1920;
   const stageH = isPortraitCanvas ? 1920 : 1080;
 
-  // Keep desktop Image updated
+  // Double-buffer desktop Image so pgmCanvas never flickers mid-decode
   useEffect(() => {
     if (!desktopFrameDataUrl) return;
-    if (!desktopImgRef.current) {
-      desktopImgRef.current = new Image();
-    }
-    desktopImgRef.current.src = desktopFrameDataUrl;
+    const img = new Image();
+    img.onload = () => {
+      desktopImgRef.current = img;
+    };
+    img.src = desktopFrameDataUrl;
   }, [desktopFrameDataUrl]);
 
-  // Keep window Images updated
+  // Double-buffer window Images so window capture never flickers mid-decode
   useEffect(() => {
     Object.entries(windowFramesMap).forEach(([hwndStr, dataUrl]) => {
       const hwnd = Number(hwndStr);
-      if (!windowImgsRef.current[hwnd]) {
-        windowImgsRef.current[hwnd] = new Image();
-      }
-      windowImgsRef.current[hwnd].src = dataUrl;
+      if (!dataUrl) return;
+      const img = new Image();
+      img.onload = () => {
+        windowImgsRef.current[hwnd] = img;
+      };
+      img.src = dataUrl;
     });
   }, [windowFramesMap]);
 
   // Manage camera & media video elements across active and preview scenes
+  // Prioritizes real physical USB webcams over disconnected virtual cameras (PRISM, XSplit, POCO X3, OBS)
   useEffect(() => {
     const allSources = [
       ...activeScene.sources,
@@ -141,31 +146,80 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           vid.playsInline = true;
           cameraVideosRef.current[key] = vid;
 
-          const constraints: MediaStreamConstraints = {
-            video: src.cameraDeviceId
-              ? { deviceId: { exact: src.cameraDeviceId }, width: 1280, height: 720 }
-              : { width: 1280, height: 720 },
-            audio: false,
-          };
+          const startCameraStream = async () => {
+            if (!navigator.mediaDevices?.getUserMedia) return;
+            try {
+              let preferredDeviceId = src.cameraDeviceId;
+              if (!preferredDeviceId || preferredDeviceId === "default_cam") {
+                // Request brief permission or enumerate devices to pick physical camera first
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoInputs = devices.filter((d) => d.kind === "videoinput");
+                const physicalCam = videoInputs.find(
+                  (d) =>
+                    d.label &&
+                    !/virtual|xsplit|prism|obs|poco|droidcam|iriun/i.test(d.label)
+                );
+                if (physicalCam && physicalCam.deviceId) {
+                  preferredDeviceId = physicalCam.deviceId;
+                }
+              }
 
-          navigator.mediaDevices
-            ?.getUserMedia(constraints)
-            .then((stream) => {
+              const stream = await navigator.mediaDevices.getUserMedia({
+                video: preferredDeviceId
+                  ? {
+                      deviceId: { ideal: preferredDeviceId },
+                      width: { ideal: 1280 },
+                      height: { ideal: 720 },
+                    }
+                  : { width: { ideal: 1280 }, height: { ideal: 720 } },
+                audio: false,
+              });
+
               cameraStreamsRef.current[key] = stream;
               vid.srcObject = stream;
-              vid.play().catch(() => {});
-            })
-            .catch(() => {
-              // Fallback if specific device constraint fails
-              navigator.mediaDevices
-                ?.getUserMedia({ video: true, audio: false })
-                .then((stream) => {
-                  cameraStreamsRef.current[key] = stream;
-                  vid.srcObject = stream;
-                  vid.play().catch(() => {});
-                })
-                .catch(() => {});
-            });
+              await vid.play().catch(() => {});
+
+              // If labels were initially empty before permission, re-check if we got stuck on a virtual cam
+              const trackLabel = stream.getVideoTracks()[0]?.label || "";
+              if (/virtual|xsplit|prism|poco/i.test(trackLabel) && !src.cameraDeviceId) {
+                const refreshed = await navigator.mediaDevices.enumerateDevices();
+                const realCam = refreshed.find(
+                  (d) =>
+                    d.kind === "videoinput" &&
+                    d.label &&
+                    !/virtual|xsplit|prism|obs|poco|droidcam|iriun/i.test(d.label)
+                );
+                if (realCam && realCam.deviceId) {
+                  stream.getTracks().forEach((t) => t.stop());
+                  const realStream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                      deviceId: { exact: realCam.deviceId },
+                      width: { ideal: 1280 },
+                      height: { ideal: 720 },
+                    },
+                    audio: false,
+                  });
+                  cameraStreamsRef.current[key] = realStream;
+                  vid.srcObject = realStream;
+                  await vid.play().catch(() => {});
+                }
+              }
+            } catch {
+              try {
+                const fallbackStream = await navigator.mediaDevices.getUserMedia({
+                  video: true,
+                  audio: false,
+                });
+                cameraStreamsRef.current[key] = fallbackStream;
+                vid.srcObject = fallbackStream;
+                await vid.play().catch(() => {});
+              } catch {
+                // No camera connected
+              }
+            }
+          };
+
+          startCameraStream();
         }
       } else if ((src.type === "media" || src.type === "replay") && src.mediaUrl) {
         const key = `${src.id}_${src.mediaUrl}`;
@@ -188,8 +242,10 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         const key = `${src.id}_${src.mediaUrl}`;
         if (!customImgsRef.current[key]) {
           const img = new Image();
+          img.onload = () => {
+            customImgsRef.current[key] = img;
+          };
           img.src = src.mediaUrl;
-          customImgsRef.current[key] = img;
         }
       }
     });
@@ -335,7 +391,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
       }
     }
 
-    // OBS chroma_key_filter_v2.effect YCbCr conversion coefficients
     const rgbToCb = (r: number, g: number, b: number) =>
       (-0.100644 * r - 0.338572 * g + 0.439216 * b) / 255.0 + 0.501961;
     const rgbToCr = (r: number, g: number, b: number) =>
@@ -363,7 +418,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
       const fullMask = Math.pow(Math.max(0, Math.min(1, baseMask / smoothness)), 1.5);
       const spillVal = Math.pow(Math.max(0, Math.min(1, baseMask / spillReduction)), 1.5);
 
-      // OBS Spill Suppression: desaturate green/key fringe toward Rec.709 luminance
       const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
       data[i] = Math.round(lum * (1 - spillVal) + r * spillVal);
       data[i + 1] = Math.round(lum * (1 - spillVal) + g * spillVal);
@@ -374,34 +428,151 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
     return off;
   };
 
-  // Render a single Scene onto a target 2D context
+  // Compute cropped visible bounds for any source
+  const getCroppedBounds = (src: StageSource) => {
+    const { x, y, width, height, cropTop, cropBottom, cropLeft, cropRight } = src.layout;
+    const cLeftPx = (cropLeft / 100) * width;
+    const cRightPx = (cropRight / 100) * width;
+    const cTopPx = (cropTop / 100) * height;
+    const cBottomPx = (cropBottom / 100) * height;
+    return {
+      drawX: x + cLeftPx,
+      drawY: y + cTopPx,
+      drawW: Math.max(12, width - cLeftPx - cRightPx),
+      drawH: Math.max(12, height - cTopPx - cBottomPx),
+    };
+  };
+
+  // Draw UI Selection Gizmo, 8 Handles (Cyan for Resize, Green for Cropped Edges), and Snap Guides
+  // Rendered onto a separate transparent overlay canvas for PGM so recordings stay 100% clean!
+  const renderGizmoOverlay = useCallback(
+    (ctx: CanvasRenderingContext2D, scene: Scene) => {
+      ctx.clearRect(0, 0, stageW, stageH);
+
+      const selectedSrc = scene.sources.find(
+        (s) => s.id === selectedSourceId && s.layout.visible
+      );
+      if (selectedSrc) {
+        const { x, y, width, height, cropTop, cropBottom, cropLeft, cropRight, lockPosition } =
+          selectedSrc.layout;
+        const { drawX, drawY, drawW, drawH } = getCroppedBounds(selectedSrc);
+        const hasCrop = cropTop > 0 || cropBottom > 0 || cropLeft > 0 || cropRight > 0;
+
+        ctx.save();
+        // If cropped, draw faint dashed outer full bounds
+        if (hasCrop) {
+          ctx.strokeStyle = "rgba(148, 163, 184, 0.35)";
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([6, 4]);
+          ctx.strokeRect(x, y, width, height);
+          ctx.setLineDash([]);
+        }
+
+        // Main bounding box around visible (cropped) area
+        ctx.strokeStyle = lockPosition ? "#F59E0B" : "#00F0FF";
+        ctx.lineWidth = 3;
+        ctx.strokeRect(drawX, drawY, drawW, drawH);
+
+        // OBS Studio style green bars (#10B981) on any cropped edge
+        ctx.strokeStyle = "#10B981";
+        ctx.lineWidth = 5;
+        if (cropTop > 0) {
+          ctx.beginPath();
+          ctx.moveTo(drawX, drawY);
+          ctx.lineTo(drawX + drawW, drawY);
+          ctx.stroke();
+        }
+        if (cropBottom > 0) {
+          ctx.beginPath();
+          ctx.moveTo(drawX, drawY + drawH);
+          ctx.lineTo(drawX + drawW, drawY + drawH);
+          ctx.stroke();
+        }
+        if (cropLeft > 0) {
+          ctx.beginPath();
+          ctx.moveTo(drawX, drawY);
+          ctx.lineTo(drawX, drawY + drawH);
+          ctx.stroke();
+        }
+        if (cropRight > 0) {
+          ctx.beginPath();
+          ctx.moveTo(drawX + drawW, drawY);
+          ctx.lineTo(drawX + drawW, drawY + drawH);
+          ctx.stroke();
+        }
+
+        // Source Label Pill
+        const cropBadge = hasCrop ? " [RECORTADO]" : "";
+        const labelText = `${selectedSrc.name} (${Math.round(drawW)}×${Math.round(drawH)})${cropBadge}`;
+        ctx.font = "bold 18px Inter, sans-serif";
+        const textW = ctx.measureText(labelText).width + 24;
+        const pillY = drawY > 36 ? drawY - 34 : drawY + 6;
+        ctx.fillStyle = lockPosition ? "#F59E0B" : "#00F0FF";
+        ctx.fillRect(drawX, pillY, textW, 28);
+        ctx.fillStyle = "#04070E";
+        ctx.fillText(labelText, drawX + 10, pillY + 20);
+
+        // 8 Resize & Crop Handles positioned on visible (cropped) rectangle
+        if (!lockPosition) {
+          const handleSize = 14;
+          const half = handleSize / 2;
+          const handleCoords: { pos: HandlePosition; hx: number; hy: number; isCropped: boolean }[] = [
+            { pos: "nw", hx: drawX, hy: drawY, isCropped: cropTop > 0 || cropLeft > 0 },
+            { pos: "n", hx: drawX + drawW / 2, hy: drawY, isCropped: cropTop > 0 },
+            { pos: "ne", hx: drawX + drawW, hy: drawY, isCropped: cropTop > 0 || cropRight > 0 },
+            { pos: "e", hx: drawX + drawW, hy: drawY + drawH / 2, isCropped: cropRight > 0 },
+            { pos: "se", hx: drawX + drawW, hy: drawY + drawH, isCropped: cropBottom > 0 || cropRight > 0 },
+            { pos: "s", hx: drawX + drawW / 2, hy: drawY + drawH, isCropped: cropBottom > 0 },
+            { pos: "sw", hx: drawX, hy: drawY + drawH, isCropped: cropBottom > 0 || cropLeft > 0 },
+            { pos: "w", hx: drawX, hy: drawY + drawH / 2, isCropped: cropLeft > 0 },
+          ];
+          ctx.strokeStyle = "#050811";
+          ctx.lineWidth = 2;
+          for (const h of handleCoords) {
+            ctx.fillStyle = h.isCropped ? "#10B981" : "#00F0FF";
+            ctx.fillRect(h.hx - half, h.hy - half, handleSize, handleSize);
+            ctx.strokeRect(h.hx - half, h.hy - half, handleSize, handleSize);
+          }
+        }
+        ctx.restore();
+      }
+
+      // Magnetic Snap Alignment Guides
+      if (snapGuides.x !== undefined || snapGuides.y !== undefined) {
+        ctx.save();
+        ctx.strokeStyle = "#FF2A54";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 6]);
+        if (snapGuides.x !== undefined) {
+          ctx.beginPath();
+          ctx.moveTo(snapGuides.x, 0);
+          ctx.lineTo(snapGuides.x, stageH);
+          ctx.stroke();
+        }
+        if (snapGuides.y !== undefined) {
+          ctx.beginPath();
+          ctx.moveTo(0, snapGuides.y);
+          ctx.lineTo(stageW, snapGuides.y);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    },
+    [stageW, stageH, selectedSourceId, snapGuides]
+  );
+
+  // Render a single Scene onto a target 2D context (CLEAN BROADCAST FEED — NO GIZMOS!)
   const renderSceneToContext = useCallback(
     (
       ctx: CanvasRenderingContext2D,
       scene: Scene,
-      isEditableSelectionCanvas: boolean,
+      drawGizmosInline: boolean,
       nowMs: number
     ) => {
       // 1. Deep Obsidian Stage Backdrop
       ctx.save();
       ctx.fillStyle = "#060911";
       ctx.fillRect(0, 0, stageW, stageH);
-
-      // Subtle reference grid when no fullscreen source covers it
-      ctx.strokeStyle = "rgba(30, 41, 59, 0.35)";
-      ctx.lineWidth = 1;
-      for (let gx = 0; gx < stageW; gx += 120) {
-        ctx.beginPath();
-        ctx.moveTo(gx, 0);
-        ctx.lineTo(gx, stageH);
-        ctx.stroke();
-      }
-      for (let gy = 0; gy < stageH; gy += 120) {
-        ctx.beginPath();
-        ctx.moveTo(0, gy);
-        ctx.lineTo(stageW, gy);
-        ctx.stroke();
-      }
       ctx.restore();
 
       // 2. Sort visible sources by zOrder ascending
@@ -415,10 +586,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           y,
           width,
           height,
-          cropTop,
-          cropBottom,
-          cropLeft,
-          cropRight,
           rotX,
           rotY,
           rotZ,
@@ -438,7 +605,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         const cy = y + height / 2;
         ctx.translate(cx, cy);
 
-        // Apply 2D Roll (rotZ) and simulated 3D Pitch/Yaw foreshortening
         if (rotZ !== 0) {
           ctx.rotate((rotZ * Math.PI) / 180);
         }
@@ -449,17 +615,9 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         ctx.transform(scale3DX, skewY, skewX, scale3DY, 0, 0);
         ctx.translate(-cx, -cy);
 
-        // Compute cropped rectangle inside [x, y, width, height]
-        const cLeftPx = (cropLeft / 100) * width;
-        const cRightPx = (cropRight / 100) * width;
-        const cTopPx = (cropTop / 100) * height;
-        const cBottomPx = (cropBottom / 100) * height;
-        const drawX = x + cLeftPx;
-        const drawY = y + cTopPx;
-        let drawW = Math.max(8, width - cLeftPx - cRightPx);
-        const drawH = Math.max(8, height - cTopPx - cBottomPx);
+        const { drawX, drawY, drawW: baseDrawW, drawH } = getCroppedBounds(src);
+        let drawW = baseDrawW;
 
-        // If Lower Third, dynamically measure text width so box expands if needed and never clips
         let lowerThirdHeadlineFontPx = Math.round(drawH * 0.33);
         let lowerThirdSubFontPx = Math.round(drawH * 0.19);
         const lowerThirdHeadlineText =
@@ -527,16 +685,14 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         }
         ctx.clip();
 
-        // Reset shadow after clip so internal content doesn't double-shadow
         ctx.shadowColor = "transparent";
         ctx.shadowBlur = 0;
         ctx.shadowOffsetX = 0;
         ctx.shadowOffsetY = 0;
 
-        // Apply CSS Shader Filter
         ctx.filter = buildCssFilterForSource(src);
 
-        // Draw Source Content by Type (Strictly separated per source type)
+        // Draw Source Content by Type
         if (src.type === "screen") {
           const dImg = desktopImgRef.current;
           if (dImg && dImg.complete && dImg.naturalWidth > 0) {
@@ -555,7 +711,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
             ctx.fillStyle = "#111827";
             ctx.fillRect(x, y, width, height);
           }
-          // Subtle Window Source Indicator in top-left
           if (src.windowTitle) {
             ctx.save();
             ctx.filter = "none";
@@ -576,7 +731,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           if (camVid && camVid.readyState >= 2) {
             const drawable = getChromaKeyedDrawable(camVid, src);
             if (src.effects.shader === "magnifysmooth") {
-              // Magnify smooth shader: zoom center 1.6x
               const sw = camVid.videoWidth || 1280;
               const sh = camVid.videoHeight || 720;
               ctx.drawImage(
@@ -631,7 +785,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           if (mVid && mVid.readyState >= 2) {
             ctx.drawImage(mVid, x, y, width, height);
           } else {
-            // Strict separation: Replay and Media never duplicate the desktop capture
             ctx.fillStyle = "#090D16";
             ctx.fillRect(x, y, width, height);
             ctx.fillStyle = src.type === "replay" ? "#FF2A54" : "#38BDF8";
@@ -648,7 +801,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           }
 
           if (src.type === "replay") {
-            // Broadcast Replay Badge overlay
             ctx.save();
             ctx.filter = "none";
             ctx.fillStyle = "#FF2A54";
@@ -681,7 +833,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           ctx.fillText(txt, drawX + 20, drawY + drawH / 2, maxTextW);
         } else if (src.type === "lower_third") {
           ctx.filter = "none";
-          // Animated broadcast lower-third bar with auto-fitted width
           const pulse = 0.92 + 0.08 * Math.sin(nowMs * 0.004);
           const bgGrad = ctx.createLinearGradient(drawX, drawY, drawX + drawW, drawY);
           bgGrad.addColorStop(0, "rgba(7, 10, 18, 0.95)");
@@ -690,14 +841,12 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           ctx.fillStyle = bgGrad;
           ctx.fillRect(drawX, drawY, drawW, drawH);
 
-          // Left Accent Bar & Bottom Pulse Line
           ctx.fillStyle = src.accentColor || "#00F0FF";
           ctx.fillRect(drawX, drawY, 10, drawH);
           ctx.fillRect(drawX, drawY + drawH - 5, drawW * 0.78 * pulse, 5);
 
           const availTextW = Math.max(120, drawW - 48);
 
-          // Headline (guaranteed non-clipped)
           ctx.fillStyle = src.textColor || "#FFFFFF";
           ctx.font = `800 ${lowerThirdHeadlineFontPx}px Rajdhani, Inter, sans-serif`;
           ctx.textAlign = "left";
@@ -709,7 +858,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
             availTextW
           );
 
-          // Subtitle + Social badge (guaranteed non-clipped)
           ctx.fillStyle = src.accentColor || "#00F0FF";
           ctx.font = `700 ${lowerThirdSubFontPx}px Inter, sans-serif`;
           ctx.fillText(
@@ -730,72 +878,13 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         }
 
         ctx.restore();
-
-        // Draw interactive Cyan Selection Box + 8 Resize Handles if selected
-        if (isEditableSelectionCanvas && src.id === selectedSourceId) {
-          ctx.save();
-          ctx.strokeStyle = src.layout.lockPosition ? "#F59E0B" : "#00F0FF";
-          ctx.lineWidth = 3;
-          ctx.strokeRect(x, y, width, height);
-
-          // Source Label Pill
-          const labelText = `${src.name} (${Math.round(width)}×${Math.round(height)})`;
-          ctx.font = "bold 18px Inter, sans-serif";
-          const textW = ctx.measureText(labelText).width + 24;
-          const pillY = y > 36 ? y - 34 : y + 6;
-          ctx.fillStyle = src.layout.lockPosition ? "#F59E0B" : "#00F0FF";
-          ctx.fillRect(x, pillY, textW, 28);
-          ctx.fillStyle = "#04070E";
-          ctx.fillText(labelText, x + 10, pillY + 20);
-
-          // 8 Resize Handles
-          if (!src.layout.lockPosition) {
-            const handleSize = 14;
-            const half = handleSize / 2;
-            const handleCoords: [number, number][] = [
-              [x, y],
-              [x + width / 2, y],
-              [x + width, y],
-              [x + width, y + height / 2],
-              [x + width, y + height],
-              [x + width / 2, y + height],
-              [x, y + height],
-              [x, y + height / 2],
-            ];
-            ctx.fillStyle = "#00F0FF";
-            ctx.strokeStyle = "#050811";
-            ctx.lineWidth = 2;
-            for (const [hx, hy] of handleCoords) {
-              ctx.fillRect(hx - half, hy - half, handleSize, handleSize);
-              ctx.strokeRect(hx - half, hy - half, handleSize, handleSize);
-            }
-          }
-          ctx.restore();
-        }
       }
 
-      // 3. Magnetic Snap Alignment Guides
-      if (isEditableSelectionCanvas && (snapGuides.x !== undefined || snapGuides.y !== undefined)) {
-        ctx.save();
-        ctx.strokeStyle = "#FF2A54";
-        ctx.lineWidth = 2;
-        ctx.setLineDash([8, 6]);
-        if (snapGuides.x !== undefined) {
-          ctx.beginPath();
-          ctx.moveTo(snapGuides.x, 0);
-          ctx.lineTo(snapGuides.x, stageH);
-          ctx.stroke();
-        }
-        if (snapGuides.y !== undefined) {
-          ctx.beginPath();
-          ctx.moveTo(0, snapGuides.y);
-          ctx.lineTo(stageW, snapGuides.y);
-          ctx.stroke();
-        }
-        ctx.restore();
+      if (drawGizmosInline) {
+        renderGizmoOverlay(ctx, scene);
       }
     },
-    [stageW, stageH, selectedSourceId, snapGuides]
+    [stageW, stageH, renderGizmoOverlay]
   );
 
   // Render Whiteboard Telestrator annotations onto context
@@ -1066,7 +1155,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
     }
 
     if (trType === "stinger") {
-      // Broadcast Alpha Stinger Wipe
       ctx.save();
       if (t < 0.5) {
         ctx.drawImage(oldSnap, 0, 0, stageW, stageH);
@@ -1094,14 +1182,13 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
     let rafId = 0;
 
     const renderLoop = (nowMs: number) => {
-      // 1. Render Program (PGM) Canvas
+      // 1. Render Clean Program (PGM) Canvas (100% free of selection gizmos for recording/streaming)
       const pgm = pgmCanvasRef.current;
       if (pgm) {
         const ctx = pgm.getContext("2d");
         if (ctx) {
-          renderSceneToContext(ctx, activeScene, !studioMode, nowMs);
+          renderSceneToContext(ctx, activeScene, false, nowMs);
 
-          // Apply active transition shader if running
           if (isTransitioningRef.current && snapshotCanvasRef.current) {
             const elapsed = nowMs - transitionStartRef.current;
             const dur = Math.max(80, transitionDurationMs);
@@ -1121,7 +1208,20 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
         }
       }
 
-      // 2. Render Studio Mode Preview Canvas if Studio Mode (`SplitView`) is enabled
+      // 2. Render Interactive Gizmo Overlay on top of PGM when not in Studio Mode
+      if (!studioMode && pgmGizmoCanvasRef.current) {
+        const gctx = pgmGizmoCanvasRef.current.getContext("2d");
+        if (gctx) {
+          renderGizmoOverlay(gctx, activeScene);
+        }
+      } else if (studioMode && pgmGizmoCanvasRef.current) {
+        const gctx = pgmGizmoCanvasRef.current.getContext("2d");
+        if (gctx) {
+          gctx.clearRect(0, 0, stageW, stageH);
+        }
+      }
+
+      // 3. Render Studio Mode Preview Canvas if Studio Mode (`SplitView`) is enabled
       if (studioMode && previewCanvasRef.current) {
         const pctx = previewCanvasRef.current.getContext("2d");
         if (pctx) {
@@ -1142,7 +1242,10 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
     transitionDurationMs,
     renderSceneToContext,
     renderWhiteboardToContext,
+    renderGizmoOverlay,
     pgmCanvasRef,
+    stageW,
+    stageH,
   ]);
 
   // Convert Mouse event client coordinates to normalized Stage coordinates (1920x1080 or 1080x1920)
@@ -1159,24 +1262,24 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
     };
   };
 
-  // Detect if mouse clicked on one of the 8 resize handles of the selected source
+  // Detect if mouse clicked on one of the 8 resize/crop handles of the selected source's cropped bounds
   const hitTestHandle = (
     mx: number,
     my: number,
     src: StageSource
   ): HandlePosition | null => {
     if (src.layout.lockPosition) return null;
-    const { x, y, width, height } = src.layout;
-    const tol = 22;
+    const { drawX, drawY, drawW, drawH } = getCroppedBounds(src);
+    const tol = 24;
     const handles: { pos: HandlePosition; hx: number; hy: number }[] = [
-      { pos: "nw", hx: x, hy: y },
-      { pos: "n", hx: x + width / 2, hy: y },
-      { pos: "ne", hx: x + width, hy: y },
-      { pos: "e", hx: x + width, hy: y + height / 2 },
-      { pos: "se", hx: x + width, hy: y + height },
-      { pos: "s", hx: x + width / 2, hy: y + height },
-      { pos: "sw", hx: x, hy: y + height },
-      { pos: "w", hx: x, hy: y + height / 2 },
+      { pos: "nw", hx: drawX, hy: drawY },
+      { pos: "n", hx: drawX + drawW / 2, hy: drawY },
+      { pos: "ne", hx: drawX + drawW, hy: drawY },
+      { pos: "e", hx: drawX + drawW, hy: drawY + drawH / 2 },
+      { pos: "se", hx: drawX + drawW, hy: drawY + drawH },
+      { pos: "s", hx: drawX + drawW / 2, hy: drawY + drawH },
+      { pos: "sw", hx: drawX, hy: drawY + drawH },
+      { pos: "w", hx: drawX, hy: drawY + drawH / 2 },
     ];
     for (const h of handles) {
       if (Math.abs(mx - h.hx) <= tol && Math.abs(my - h.hy) <= tol) {
@@ -1194,7 +1297,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
     const canvasEl = e.currentTarget;
     const { x: mx, y: my } = getCanvasCoords(e, canvasEl);
 
-    // If Whiteboard tool is active, start drawing a stroke
     if (wbTool !== "select") {
       activeStrokeRef.current = {
         id: `wb_${Date.now()}`,
@@ -1227,20 +1329,20 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
       }
     }
 
-    // 2. Hit-test visible sources from top Z-order to bottom Z-order
+    // 2. Hit-test visible sources from top Z-order to bottom Z-order using their visible cropped bounds
     const topDown = [...targetScene.sources]
       .filter((s) => s.layout.visible)
       .sort((a, b) => b.zOrder - a.zOrder);
 
     for (const src of topDown) {
-      const { x, y, width, height } = src.layout;
-      if (mx >= x && mx <= x + width && my >= y && my <= y + height) {
+      const { drawX, drawY, drawW, drawH } = getCroppedBounds(src);
+      if (mx >= drawX && mx <= drawX + drawW && my >= drawY && my <= drawY + drawH) {
         onSelectSource(src.id);
         if (!src.layout.lockPosition) {
           setDragState({
             sceneId: targetScene.id,
             sourceId: src.id,
-            mode: e.shiftKey ? "rotate" : e.altKey ? "crop" : "move",
+            mode: e.shiftKey ? "rotate" : "move",
             startMouseX: mx,
             startMouseY: my,
             initialSource: JSON.parse(JSON.stringify(src)),
@@ -1280,7 +1382,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
 
       if (snapToGrid) {
         const snapTol = 18;
-        // Snap to left/right/center X
         if (Math.abs(nx) < snapTol) {
           nx = 0;
           guides.x = 0;
@@ -1294,7 +1395,6 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
           guides.x = stageW / 2;
         }
 
-        // Snap to top/bottom/center Y
         if (Math.abs(ny) < snapTol) {
           ny = 0;
           guides.y = 0;
@@ -1344,17 +1444,38 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
       next.layout.width = Math.round(width);
       next.layout.height = Math.round(height);
     } else if (dragState.mode === "crop") {
-      // Alt + Drag interactive edge cropping
-      next.layout.cropLeft = Math.max(
-        0,
-        Math.min(45, Math.round(init.layout.cropLeft + dx * 0.05))
-      );
-      next.layout.cropTop = Math.max(
-        0,
-        Math.min(45, Math.round(init.layout.cropTop + dy * 0.05))
-      );
+      // OBS Studio / XSplit style Alt + Drag edge cropping per handle
+      const h = dragState.handle || "se";
+      const w = Math.max(64, init.layout.width);
+      const ht = Math.max(48, init.layout.height);
+      const pctX = (dx / w) * 100;
+      const pctY = (dy / ht) * 100;
+
+      if (h.includes("w")) {
+        next.layout.cropLeft = Math.max(
+          0,
+          Math.min(80 - init.layout.cropRight, Math.round(init.layout.cropLeft + pctX))
+        );
+      }
+      if (h.includes("e")) {
+        next.layout.cropRight = Math.max(
+          0,
+          Math.min(80 - init.layout.cropLeft, Math.round(init.layout.cropRight - pctX))
+        );
+      }
+      if (h.includes("n")) {
+        next.layout.cropTop = Math.max(
+          0,
+          Math.min(80 - init.layout.cropBottom, Math.round(init.layout.cropTop + pctY))
+        );
+      }
+      if (h.includes("s")) {
+        next.layout.cropBottom = Math.max(
+          0,
+          Math.min(80 - init.layout.cropTop, Math.round(init.layout.cropBottom - pctY))
+        );
+      }
     } else if (dragState.mode === "rotate") {
-      // Shift + Drag interactive 3D rotation
       next.layout.rotZ = Math.max(
         -180,
         Math.min(180, Math.round(init.layout.rotZ + dx * 0.25))
@@ -1643,50 +1764,67 @@ export const StageCompositor: React.FC<StageCompositorProps> = ({
                 : "border-slate-800/90 hover:border-[#00F0FF]/50"
             } bg-black/95 shadow-[0_0_35px_rgba(0,0,0,0.85)] p-1 transition`}
           >
-            <canvas
-              ref={pgmCanvasRef}
-              width={stageW}
-              height={stageH}
-              onMouseDown={(e) => {
-                if (!studioMode || wbTool !== "select") {
-                  handleCanvasMouseDown(e, activeScene);
-                }
-              }}
-              onMouseMove={(e) => {
-                if (!studioMode || wbTool !== "select") {
-                  handleCanvasMouseMove(e, activeScene);
-                }
-              }}
-              onMouseUp={handleCanvasMouseUp}
-              onMouseLeave={handleCanvasMouseUp}
-              onDoubleClick={() => {
-                if (!studioMode && selectedSourceObj) {
-                  onOpenSourceProperties(selectedSourceObj, activeScene.id);
-                }
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                if (!studioMode && selectedSourceObj) {
-                  onOpenSourceProperties(selectedSourceObj, activeScene.id);
-                }
-              }}
-              className={`${
+            <div
+              className={`relative flex items-center justify-center ${
                 isPortraitCanvas ? "h-full w-auto" : "w-full h-auto max-h-full"
-              } object-contain rounded ${
-                wbTool !== "select"
-                  ? "cursor-crosshair"
-                  : studioMode
-                  ? "cursor-default"
-                  : "cursor-move"
               }`}
-            />
+            >
+              {/* CLEAN RECORDABLE PROGRAM CANVAS */}
+              <canvas
+                ref={pgmCanvasRef}
+                width={stageW}
+                height={stageH}
+                onMouseDown={(e) => {
+                  if (!studioMode || wbTool !== "select") {
+                    handleCanvasMouseDown(e, activeScene);
+                  }
+                }}
+                onMouseMove={(e) => {
+                  if (!studioMode || wbTool !== "select") {
+                    handleCanvasMouseMove(e, activeScene);
+                  }
+                }}
+                onMouseUp={handleCanvasMouseUp}
+                onMouseLeave={handleCanvasMouseUp}
+                onDoubleClick={() => {
+                  if (!studioMode && selectedSourceObj) {
+                    onOpenSourceProperties(selectedSourceObj, activeScene.id);
+                  }
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  if (!studioMode && selectedSourceObj) {
+                    onOpenSourceProperties(selectedSourceObj, activeScene.id);
+                  }
+                }}
+                className={`${
+                  isPortraitCanvas ? "h-full w-auto" : "w-full h-auto max-h-full"
+                } object-contain rounded ${
+                  wbTool !== "select"
+                    ? "cursor-crosshair"
+                    : studioMode
+                    ? "cursor-default"
+                    : "cursor-move"
+                }`}
+              />
+
+              {/* TRANSPARENT UI GIZMO OVERLAY CANVAS (Never recorded into video files!) */}
+              <canvas
+                ref={pgmGizmoCanvasRef}
+                width={stageW}
+                height={stageH}
+                className="pointer-events-none absolute inset-0 w-full h-full object-contain rounded"
+              />
+            </div>
 
             {/* Subtle Corner Hints */}
             {!studioMode && (
               <div className="pointer-events-none absolute bottom-2.5 right-3 flex items-center gap-2 bg-slate-950/80 backdrop-blur px-2.5 py-1 rounded border border-slate-800/80 text-[10px] text-slate-400">
                 <span>Clic + Arrastrar: Mover/Estirar</span>
                 <span>•</span>
-                <span>Alt + Arrastrar: Recortar</span>
+                <span className="text-emerald-400 font-medium">
+                  Alt + Tirador: Recortar Borde
+                </span>
                 <span>•</span>
                 <span>Shift + Arrastrar: Rotar 3D</span>
                 <span>•</span>

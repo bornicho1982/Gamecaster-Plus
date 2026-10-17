@@ -471,11 +471,13 @@ export const App: React.FC = () => {
           (s) => s.type === "screen" && s.layout.visible
         );
         const showDesktopCursor = screenSrc ? screenSrc.showCursor !== false : true;
+        const monitorIndex = screenSrc?.monitorIndex ?? 0;
 
         const frame = await invoke<string>("capture_live_frame", {
           width: 960,
           height: 540,
           showCursor: showDesktopCursor,
+          monitorIndex,
         });
         if (!cancelled && frame.startsWith("data:image/jpeg;base64,")) {
           setDesktopFrame(frame);
@@ -505,7 +507,7 @@ export const App: React.FC = () => {
         // Fallback when not in Tauri
       }
       if (!cancelled) {
-        timerId = setTimeout(pollCapture, 110);
+        timerId = setTimeout(pollCapture, 45);
       }
     };
 
@@ -785,6 +787,9 @@ export const App: React.FC = () => {
       if (mode === "native_desktop") {
         try {
           const [wStr, hStr] = globalSettings.outputResolution.split("x");
+          const screenSrc = activeScene.sources.find(
+            (s) => s.type === "screen" && s.layout.visible
+          );
           const path = await invoke<string>("start_recording", {
             config: {
               width: Number(wStr) || 1920,
@@ -795,6 +800,7 @@ export const App: React.FC = () => {
               format: globalSettings.recordingFormat,
               record_audio: true,
               audio_device: null,
+              monitor_index: screenSrc?.monitorIndex ?? 0,
             },
           });
           setActiveRecordingEngine("native_desktop");

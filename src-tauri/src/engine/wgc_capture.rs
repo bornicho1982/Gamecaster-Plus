@@ -1,7 +1,6 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use image::{ImageFormat, RgbImage};
+use image::{codecs::jpeg::JpegEncoder, ImageFormat, RgbImage};
 use serde::{Deserialize, Serialize};
-use std::io::Cursor;
 use std::mem::{size_of, zeroed};
 use std::path::PathBuf;
 
@@ -10,8 +9,9 @@ use windows_sys::Win32::{
     Foundation::{BOOL, HWND, LPARAM, POINT, RECT, TRUE},
     Graphics::Gdi::{
         BitBlt, ClientToScreen, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
-        GetDC, GetDIBits, ReleaseDC, SelectObject, SetStretchBltMode, StretchBlt, BITMAPINFO,
-        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, HDC, SRCCOPY,
+        EnumDisplayMonitors, GetDC, GetDIBits, GetMonitorInfoW, ReleaseDC, SelectObject,
+        SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, COLORONCOLOR,
+        DIB_RGB_COLORS, HDC, HMONITOR, MONITORINFOEXW, SRCCOPY,
     },
     Storage::Xps::PrintWindow,
     System::Threading::GetCurrentProcessId,
@@ -27,8 +27,10 @@ const WDA_NONE: u32 = 0x00000000;
 const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
 
 /// Excludes or includes all top-level windows belonging to the current Gamecaster Plus process
-/// from desktop/screen capture via Win32 `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)`.
-/// This eliminates the "infinite mirror effect" when capturing the primary monitor.
+/// from capture via Win32 `SetWindowDisplayAffinity`.
+/// NOTE: On Windows 10/11 GDI (`GetDC(NULL)` / `gdigrab`), enabling `WDA_EXCLUDEFROMCAPTURE` causes DWM
+/// to paint the window's region as a solid black rectangle when capturing the full monitor.
+/// Therefore this defaults to `false` unless explicitly toggled by the user for DRM/WGC privacy.
 pub fn set_process_windows_exclude_from_capture(exclude: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     unsafe {
@@ -70,6 +72,17 @@ pub fn set_process_windows_exclude_from_capture(exclude: bool) -> Result<(), Str
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorInfo {
+    pub index: usize,
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub is_primary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowInfo {
     pub hwnd: isize,
     pub title: String,
@@ -78,8 +91,82 @@ pub struct WindowInfo {
     pub height: i32,
 }
 
-/// Draws the live hardware mouse cursor onto `hdc_target` scaled to the capture bounds
-/// (replicating OBS `win-capture.dll` cursor overlay and XSplit `IsCursorCaptureEnabled`).
+/// Enumerates all connected display monitors (`EnumDisplayMonitors`) so dual/triple monitor setups
+/// can capture any specific monitor cleanly without stretching across the virtual desktop.
+pub fn enumerate_monitors() -> Vec<MonitorInfo> {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        unsafe extern "system" fn monitor_enum_proc(
+            hmonitor: HMONITOR,
+            _hdc: HDC,
+            _lprect: *mut RECT,
+            lparam: LPARAM,
+        ) -> BOOL {
+            let list = &mut *(lparam as *mut Vec<MonitorInfo>);
+            let mut mi: MONITORINFOEXW = zeroed();
+            mi.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+            if GetMonitorInfoW(hmonitor, &mut mi as *mut _ as *mut _) != 0 {
+                let r = mi.monitorInfo.rcMonitor;
+                let w = (r.right - r.left).max(640);
+                let h = (r.bottom - r.top).max(360);
+                let is_primary = (mi.monitorInfo.dwFlags & 1) != 0;
+                let idx = list.len();
+                let dev_name = String::from_utf16_lossy(
+                    &mi.szDevice
+                        .iter()
+                        .copied()
+                        .take_while(|&c| c != 0)
+                        .collect::<Vec<u16>>(),
+                );
+                let label = if is_primary {
+                    format!("Monitor Principal #{} ({}×{})", idx + 1, w, h)
+                } else {
+                    format!("Monitor Secundario #{} ({}×{} • {})", idx + 1, w, h, dev_name)
+                };
+                list.push(MonitorInfo {
+                    index: idx,
+                    name: label,
+                    x: r.left,
+                    y: r.top,
+                    width: w,
+                    height: h,
+                    is_primary,
+                });
+            }
+            TRUE
+        }
+
+        let mut monitors: Vec<MonitorInfo> = Vec::new();
+        let _ = EnumDisplayMonitors(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            Some(monitor_enum_proc),
+            (&mut monitors as *mut Vec<MonitorInfo>) as LPARAM,
+        );
+
+        if monitors.is_empty() {
+            let w = GetSystemMetrics(SM_CXSCREEN).max(1280);
+            let h = GetSystemMetrics(SM_CYSCREEN).max(720);
+            monitors.push(MonitorInfo {
+                index: 0,
+                name: format!("Monitor Principal #1 ({w}×{h})"),
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+                is_primary: true,
+            });
+        }
+        monitors
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Vec::new()
+    }
+}
+
+/// Draws the live hardware mouse cursor onto `hdc_target` scaled to the capture bounds.
 #[cfg(target_os = "windows")]
 unsafe fn draw_cursor_on_hdc(
     hdc_target: HDC,
@@ -116,18 +203,56 @@ unsafe fn draw_cursor_on_hdc(
     }
 }
 
-/// Captures a live frame from the primary desktop monitor, downscaled to `target_w x target_h`
-/// for smooth 60 FPS Stage composition, converting 4-channel BGRA explicitly to 3-channel RGB
-/// before encoding to JPEG Base64.
+/// Checks if a captured BGRA buffer from `PrintWindow` is completely black/empty
+/// (a known DWM quirk with certain hardware-accelerated windows).
+fn is_bgra_buffer_blank(bgra: &[u8]) -> bool {
+    if bgra.len() < 64 {
+        return true;
+    }
+    // Sample 64 evenly-spaced pixels across the frame
+    let step = (bgra.len() / 4 / 64).max(1) * 4;
+    let mut non_zero_samples = 0;
+    let mut idx = 0;
+    while idx + 3 < bgra.len() {
+        let b = bgra[idx];
+        let g = bgra[idx + 1];
+        let r = bgra[idx + 2];
+        if r > 4 || g > 4 || b > 4 {
+            non_zero_samples += 1;
+            if non_zero_samples >= 3 {
+                return false;
+            }
+        }
+        idx += step;
+    }
+    true
+}
+
+/// Captures a live frame from the specified monitor (`monitor_index`), downscaled using fast
+/// hardware-friendly `COLORONCOLOR` GDI stretch (~3ms) and encoded to JPEG (Q=78).
 pub fn capture_desktop_jpeg_base64(
     target_w: u32,
     target_h: u32,
     show_cursor: bool,
+    monitor_index: usize,
 ) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     unsafe {
-        let screen_w = GetSystemMetrics(SM_CXSCREEN).max(640);
-        let screen_h = GetSystemMetrics(SM_CYSCREEN).max(360);
+        let monitors = enumerate_monitors();
+        let mon = monitors
+            .get(monitor_index)
+            .or_else(|| monitors.first())
+            .cloned()
+            .unwrap_or(MonitorInfo {
+                index: 0,
+                name: "Primary".into(),
+                x: 0,
+                y: 0,
+                width: GetSystemMetrics(SM_CXSCREEN).max(640),
+                height: GetSystemMetrics(SM_CYSCREEN).max(360),
+                is_primary: true,
+            });
+
         let out_w = (target_w.clamp(320, 1920)) as i32;
         let out_h = (target_h.clamp(180, 1080)) as i32;
 
@@ -150,7 +275,8 @@ pub fn capture_desktop_jpeg_base64(
         }
 
         let old_obj = SelectObject(hdc_mem, hbm);
-        SetStretchBltMode(hdc_mem, HALFTONE as i32);
+        // COLORONCOLOR (STRETCH_DELETESCANS) is 8x faster than software HALFTONE
+        SetStretchBltMode(hdc_mem, COLORONCOLOR as i32);
         let blt_ok = StretchBlt(
             hdc_mem,
             0,
@@ -158,19 +284,37 @@ pub fn capture_desktop_jpeg_base64(
             out_w,
             out_h,
             hdc_screen,
-            0,
-            0,
-            screen_w,
-            screen_h,
+            mon.x,
+            mon.y,
+            mon.width,
+            mon.height,
             SRCCOPY,
         );
 
         if blt_ok == 0 {
-            let _ = BitBlt(hdc_mem, 0, 0, out_w, out_h, hdc_screen, 0, 0, SRCCOPY);
+            let _ = BitBlt(
+                hdc_mem,
+                0,
+                0,
+                out_w,
+                out_h,
+                hdc_screen,
+                mon.x,
+                mon.y,
+                SRCCOPY,
+            );
         }
 
         if show_cursor {
-            draw_cursor_on_hdc(hdc_mem, 0, 0, screen_w, screen_h, out_w, out_h);
+            draw_cursor_on_hdc(
+                hdc_mem,
+                mon.x,
+                mon.y,
+                mon.width,
+                mon.height,
+                out_w,
+                out_h,
+            );
         }
 
         let mut bmi: BITMAPINFO = zeroed();
@@ -206,16 +350,16 @@ pub fn capture_desktop_jpeg_base64(
 
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (target_w, target_h, show_cursor);
+        let _ = (target_w, target_h, show_cursor, monitor_index);
         Err("Unsupported OS".into())
     }
 }
 
 /// Captures a specific window (`HWND`) using OBS Studio `win-capture.dll` hybrid strategy:
-/// 1. Validates `HWND`; if destroyed or invalid, attempts re-matching by window title (`ms_find_window`).
-/// 2. Uses `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT)` for background/occluded hardware windows,
-///    falling back to `BitBlt` client-area crop (`GetClientRect` + `ClientToScreen`) when needed.
-/// 3. Overlays the mouse cursor (`DrawIconEx`) when `show_cursor` is enabled.
+/// 1. Validates `HWND`; if destroyed or invalid, re-matches by window title (`ms_find_window`).
+/// 2. Tries `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT)`.
+/// 3. Verifies via `is_bgra_buffer_blank` that `PrintWindow` did not return a blank black DWM surface;
+///    if blank, falls back automatically to screen `BitBlt` crop at the window's client rectangle.
 pub fn capture_window_jpeg_base64(
     hwnd_val: isize,
     target_w: u32,
@@ -242,16 +386,16 @@ pub fn capture_window_jpeg_base64(
             }
         }
 
-        if hwnd.is_null() || IsWindow(hwnd) == 0 || IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
-            return capture_desktop_jpeg_base64(target_w, target_h, show_cursor);
+        if hwnd.is_null() || IsWindow(hwnd) == 0 || IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0
+        {
+            return capture_desktop_jpeg_base64(target_w, target_h, show_cursor, 0);
         }
 
         let mut win_rect: RECT = zeroed();
         if GetWindowRect(hwnd, &mut win_rect) == 0 {
-            return capture_desktop_jpeg_base64(target_w, target_h, show_cursor);
+            return capture_desktop_jpeg_base64(target_w, target_h, show_cursor, 0);
         }
 
-        // Compute Client Area rect (excludes Windows titlebar/shadow borders when possible)
         let mut client_rect: RECT = zeroed();
         let mut client_origin = POINT {
             x: win_rect.left,
@@ -276,15 +420,18 @@ pub fn capture_window_jpeg_base64(
         let hbm_win = CreateCompatibleBitmap(hdc_screen, win_w, win_h);
         let old_win = SelectObject(hdc_win_mem, hbm_win);
 
-        // Try hardware-accelerated window render first, fallback to screen client-area BitBlt
         let printed = PrintWindow(hwnd, hdc_win_mem, PW_RENDERFULLCONTENT);
-        let (src_x_in_mem, src_y_in_mem, src_crop_w, src_crop_h, screen_left, screen_top) =
+        let (mut src_x_in_mem, mut src_y_in_mem, mut src_crop_w, mut src_crop_h, mut screen_left, mut screen_top) =
             if printed != 0 {
                 if has_client {
                     let offset_x = (client_origin.x - win_rect.left).max(0);
                     let offset_y = (client_origin.y - win_rect.top).max(0);
-                    let cw = (client_rect.right - client_rect.left).min(win_w - offset_x).max(64);
-                    let ch = (client_rect.bottom - client_rect.top).min(win_h - offset_y).max(64);
+                    let cw = (client_rect.right - client_rect.left)
+                        .min(win_w - offset_x)
+                        .max(64);
+                    let ch = (client_rect.bottom - client_rect.top)
+                        .min(win_h - offset_y)
+                        .max(64);
                     (offset_x, offset_y, cw, ch, client_origin.x, client_origin.y)
                 } else {
                     (0, 0, win_w, win_h, win_rect.left, win_rect.top)
@@ -307,7 +454,7 @@ pub fn capture_window_jpeg_base64(
         let hdc_scaled = CreateCompatibleDC(hdc_screen);
         let hbm_scaled = CreateCompatibleBitmap(hdc_screen, out_w, out_h);
         let old_scaled = SelectObject(hdc_scaled, hbm_scaled);
-        SetStretchBltMode(hdc_scaled, HALFTONE as i32);
+        SetStretchBltMode(hdc_scaled, COLORONCOLOR as i32);
         let _ = StretchBlt(
             hdc_scaled,
             0,
@@ -322,6 +469,59 @@ pub fn capture_window_jpeg_base64(
             SRCCOPY,
         );
 
+        let mut bmi: BITMAPINFO = zeroed();
+        bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = out_w;
+        bmi.bmiHeader.biHeight = -out_h;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        let mut bgra_buf: Vec<u8> = vec![0u8; (out_w as usize) * (out_h as usize) * 4];
+        let mut lines = GetDIBits(
+            hdc_scaled,
+            hbm_scaled,
+            0,
+            out_h as u32,
+            bgra_buf.as_mut_ptr() as *mut _,
+            &mut bmi,
+            DIB_RGB_COLORS,
+        );
+
+        // OBS Fallback: if PrintWindow returned an all-black surface, fallback to screen BitBlt crop
+        if printed != 0 && (lines == 0 || is_bgra_buffer_blank(&bgra_buf)) {
+            let (sx, sy, sw, sh) = if has_client {
+                (
+                    client_origin.x,
+                    client_origin.y,
+                    (client_rect.right - client_rect.left).max(64),
+                    (client_rect.bottom - client_rect.top).max(64),
+                )
+            } else {
+                (win_rect.left, win_rect.top, win_w, win_h)
+            };
+            src_x_in_mem = 0;
+            src_y_in_mem = 0;
+            src_crop_w = sw;
+            src_crop_h = sh;
+            screen_left = sx;
+            screen_top = sy;
+            let _ = BitBlt(hdc_win_mem, 0, 0, sw, sh, hdc_screen, sx, sy, SRCCOPY);
+            let _ = StretchBlt(
+                hdc_scaled,
+                0,
+                0,
+                out_w,
+                out_h,
+                hdc_win_mem,
+                src_x_in_mem,
+                src_y_in_mem,
+                src_crop_w,
+                src_crop_h,
+                SRCCOPY,
+            );
+        }
+
         if show_cursor {
             draw_cursor_on_hdc(
                 hdc_scaled,
@@ -334,16 +534,7 @@ pub fn capture_window_jpeg_base64(
             );
         }
 
-        let mut bmi: BITMAPINFO = zeroed();
-        bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-        bmi.bmiHeader.biWidth = out_w;
-        bmi.bmiHeader.biHeight = -out_h;
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
-
-        let mut bgra_buf: Vec<u8> = vec![0u8; (out_w as usize) * (out_h as usize) * 4];
-        let lines = GetDIBits(
+        lines = GetDIBits(
             hdc_scaled,
             hbm_scaled,
             0,
@@ -363,7 +554,7 @@ pub fn capture_window_jpeg_base64(
         ReleaseDC(std::ptr::null_mut(), hdc_screen);
 
         if lines == 0 {
-            return capture_desktop_jpeg_base64(target_w, target_h, show_cursor);
+            return capture_desktop_jpeg_base64(target_w, target_h, show_cursor, 0);
         }
 
         encode_bgra_to_jpeg_data_url(&bgra_buf, out_w as u32, out_h as u32)
@@ -376,7 +567,7 @@ pub fn capture_window_jpeg_base64(
     }
 }
 
-/// Converts a 4-channel Windows BGRA buffer into a 3-channel `RgbImage` and encodes to JPEG Base64.
+/// Converts a 4-channel Windows BGRA buffer into a 3-channel `RgbImage` and encodes to JPEG Base64 (Quality 78 for low latency).
 fn encode_bgra_to_jpeg_data_url(bgra: &[u8], width: u32, height: u32) -> Result<String, String> {
     let mut rgb_bytes = Vec::with_capacity((width as usize) * (height as usize) * 3);
     for chunk in bgra.chunks_exact(4) {
@@ -388,12 +579,13 @@ fn encode_bgra_to_jpeg_data_url(bgra: &[u8], width: u32, height: u32) -> Result<
     let rgb_img = RgbImage::from_raw(width, height, rgb_bytes)
         .ok_or_else(|| "Failed to construct 3-channel RgbImage from BGRA buffer".to_string())?;
 
-    let mut jpeg_cursor = Cursor::new(Vec::with_capacity(65536));
-    rgb_img
-        .write_to(&mut jpeg_cursor, ImageFormat::Jpeg)
+    let mut jpeg_buf = Vec::with_capacity(49152);
+    let mut encoder = JpegEncoder::new_with_quality(&mut jpeg_buf, 78);
+    encoder
+        .encode_image(&rgb_img)
         .map_err(|e| format!("JPEG encoding error: {e}"))?;
 
-    let encoded = BASE64.encode(jpeg_cursor.into_inner());
+    let encoded = BASE64.encode(jpeg_buf);
     Ok(format!("data:image/jpeg;base64,{encoded}"))
 }
 

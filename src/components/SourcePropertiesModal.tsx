@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   StageSource,
   SHADER_EFFECT_LIST,
@@ -7,6 +8,7 @@ import {
   ShaderEffectId,
   TransitionId,
   WindowInfo,
+  MonitorInfo,
 } from "../types/broadcaster";
 import {
   X,
@@ -45,6 +47,7 @@ export const SourcePropertiesModal: React.FC<SourcePropertiesModalProps> = ({
     "layout" | "color" | "effects" | "transition"
   >("layout");
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
+  const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
 
   const stageW = isPortraitCanvas ? 1080 : 1920;
   const stageH = isPortraitCanvas ? 1920 : 1080;
@@ -59,6 +62,10 @@ export const SourcePropertiesModal: React.FC<SourcePropertiesModalProps> = ({
         .catch(() => {});
     } else if (source.type === "window") {
       onRefreshWindows();
+    } else if (source.type === "screen") {
+      invoke<MonitorInfo[]>("list_monitors")
+        .then((list) => setMonitors(list))
+        .catch(() => {});
     }
   }, [source.type, onRefreshWindows]);
 
@@ -122,12 +129,44 @@ export const SourcePropertiesModal: React.FC<SourcePropertiesModalProps> = ({
         </div>
 
         {/* Source-Specific Source Configuration Strip */}
-        {(source.type === "window" ||
+        {(source.type === "screen" ||
+          source.type === "window" ||
           source.type === "camera" ||
           source.type === "text" ||
           source.type === "lower_third" ||
           source.type === "color") && (
           <div className="px-4 py-2.5 bg-[#0D121F] border-b border-slate-800/90 flex flex-wrap items-center gap-3">
+            {source.type === "screen" && (
+              <div className="flex items-center gap-2 w-full">
+                <span className="text-slate-400 font-medium">
+                  Monitor Físico a Capturar:
+                </span>
+                <select
+                  value={source.monitorIndex ?? 0}
+                  onChange={(e) => {
+                    const idx = Number(e.target.value);
+                    const monObj = monitors.find((m) => m.index === idx);
+                    onUpdate(sceneId, {
+                      ...source,
+                      monitorIndex: idx,
+                      name: monObj ? monObj.name : `Monitor #${idx + 1}`,
+                    });
+                  }}
+                  className="flex-1 bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-slate-100 outline-none"
+                >
+                  {monitors.length === 0 ? (
+                    <option value={0}>Monitor Principal #1 (1920×1080)</option>
+                  ) : (
+                    monitors.map((m) => (
+                      <option key={m.index} value={m.index}>
+                        🖥️ {m.name} (Offset {m.x},{m.y})
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+            )}
+
             {source.type === "window" && (
               <div className="flex items-center gap-2 w-full">
                 <span className="text-slate-400 font-medium">
@@ -177,7 +216,7 @@ export const SourcePropertiesModal: React.FC<SourcePropertiesModalProps> = ({
                   }
                   className="flex-1 bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-slate-100 outline-none"
                 >
-                  <option value="">Cámara Predeterminada del Sistema</option>
+                  <option value="">Cámara Física Automática (Prioridad USB)</option>
                   {cameraDevices.map((d, idx) => (
                     <option key={d.deviceId || idx} value={d.deviceId}>
                       {d.label || `Cámara USB #${idx + 1}`}

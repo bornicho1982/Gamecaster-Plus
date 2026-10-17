@@ -607,7 +607,10 @@ export const GlobalSettingsModal: React.FC<GlobalSettingsModalProps> = ({
                         className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white outline-none"
                       >
                         <option value="h264_nvenc">
-                          NVIDIA NVENC H.264 (GPU)
+                          NVIDIA NVENC H.264 (GPU Directo)
+                        </option>
+                        <option value="h264_mf">
+                          Windows MediaFoundation H.264 (Oficial Microsoft Store)
                         </option>
                         <option value="libx264">x264 Ultrafast (CPU)</option>
                       </select>
